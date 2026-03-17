@@ -719,14 +719,29 @@ export function createApp(ctx: ServiceContext): Hono {
     const linkerUrls = toLinkerUrls(await ctx.urlProvider.getLinkerRegistrations());
 
     let membraneProofs: Record<string, string> | undefined;
-    if (ctx.proofGenerator && ctx.config.dna_hashes?.length) {
-      const rawProofs = await ctx.proofGenerator.generate(
-        session.agent_key,
-        ctx.config.dna_hashes,
-      );
-      membraneProofs = {};
-      for (const [hash, proof] of Object.entries(rawProofs)) {
-        membraneProofs[hash] = toBase64(proof);
+    const dnaHashesCfg = ctx.config.dna_hashes;
+    if (ctx.proofGenerator && dnaHashesCfg) {
+      // Normalise: role-keyed Record or flat array
+      const isRoleKeyed = !Array.isArray(dnaHashesCfg);
+      const hashList = isRoleKeyed ? Object.values(dnaHashesCfg) : dnaHashesCfg;
+      if (hashList.length > 0) {
+        const rawProofs = await ctx.proofGenerator.generate(
+          session.agent_key,
+          hashList,
+        );
+        membraneProofs = {};
+        if (isRoleKeyed) {
+          // Key proofs by role name
+          for (const [role, hash] of Object.entries(dnaHashesCfg)) {
+            if (rawProofs[hash]) {
+              membraneProofs[role] = toBase64(rawProofs[hash]);
+            }
+          }
+        } else {
+          for (const [hash, proof] of Object.entries(rawProofs)) {
+            membraneProofs[hash] = toBase64(proof);
+          }
+        }
       }
     }
 

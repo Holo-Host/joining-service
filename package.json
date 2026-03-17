@@ -4,6 +4,9 @@
   "description": "Reference joining service for Holochain hApps on Holo",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "joining-cli": "dist/cli/index.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",

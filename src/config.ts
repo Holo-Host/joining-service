@@ -17,7 +17,14 @@ export interface ServiceConfig {
     selection_mode: 'assigned' | 'client_choice';
     region_hints?: string[];
   };
-  dna_hashes?: string[];
+  /**
+   * DNA hashes for membrane proof generation.
+   * Accepts either:
+   *   - string[] — flat list of DNA hashes (proofs keyed by hash in response)
+   *   - Record<string, string> — role_name → dna_hash (proofs keyed by role name)
+   * The role-keyed form is required for CLI provisioning (roles-settings YAML output).
+   */
+  dna_hashes?: string[] | Record<string, string>;
   dna_modifiers?: DnaModifiers;
   membrane_proof?: {
     enabled: boolean;
