@@ -43,8 +43,8 @@ export interface ServiceConfig {
   session?: {
     store: 'memory' | 'sqlite' | 'cloudflare-kv';
     db_path?: string;
+    /** TTL for pending (not yet approved) sessions. Default: 86400 (24 hours). */
     pending_ttl_seconds?: number;
-    ready_ttl_seconds?: number;
   };
   reconnect?: {
     enabled?: boolean;
@@ -65,8 +65,7 @@ export interface ServiceConfig {
 const DEFAULTS = {
   session: {
     store: 'memory' as const,
-    pending_ttl_seconds: 3600,
-    ready_ttl_seconds: 86400,
+    pending_ttl_seconds: 86400,
   },
   reconnect: {
     enabled: true,

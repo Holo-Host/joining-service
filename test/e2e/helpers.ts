@@ -34,7 +34,7 @@ const DEFAULT_CONFIG: Partial<ServiceConfig> = {
     happ_bundle_url: 'https://example.com/test.happ',
   },
   auth_methods: ['open'],
-  session: { store: 'memory', pending_ttl_seconds: 3600, ready_ttl_seconds: 86400 },
+  session: { store: 'memory', pending_ttl_seconds: 86400 },
 };
 
 export async function startE2EServer(
@@ -53,7 +53,6 @@ export async function startE2EServer(
 
   const sessionStore = new MemorySessionStore(
     config.session!.pending_ttl_seconds,
-    config.session!.ready_ttl_seconds,
   );
 
   // Flatten AuthMethodEntry[] to unique method names (handles { any_of: [...] } groups)

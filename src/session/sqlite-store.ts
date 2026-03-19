@@ -17,7 +17,6 @@ const SCHEMA = `
 export class SqliteSessionStore implements SessionStore {
   private db: Database.Database;
   private pendingTtlMs: number;
-  private readyTtlMs: number;
 
   private stmtInsert: Database.Statement;
   private stmtGet: Database.Statement;
@@ -28,11 +27,9 @@ export class SqliteSessionStore implements SessionStore {
 
   constructor(
     dbPath: string,
-    pendingTtlSeconds = 3600,
-    readyTtlSeconds = 86400,
+    pendingTtlSeconds = 86400,
   ) {
     this.pendingTtlMs = pendingTtlSeconds * 1000;
-    this.readyTtlMs = readyTtlSeconds * 1000;
 
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -64,8 +61,7 @@ export class SqliteSessionStore implements SessionStore {
 
     this.stmtCleanup = this.db.prepare(`
       DELETE FROM sessions WHERE
-        (status != 'ready' AND created_at < ?) OR
-        (status = 'ready' AND created_at < ?)
+        status != 'ready' AND created_at < ?
     `);
   }
 
@@ -126,17 +122,17 @@ export class SqliteSessionStore implements SessionStore {
 
   cleanup(): void {
     const now = Date.now();
-    this.stmtCleanup.run(now - this.pendingTtlMs, now - this.readyTtlMs);
+    this.stmtCleanup.run(now - this.pendingTtlMs);
   }
 
   close(): void {
     this.db.close();
   }
 
+  /** Ready sessions never expire; pending sessions use the configured TTL. */
   private isExpired(session: SessionData): boolean {
-    const ttl =
-      session.status === 'ready' ? this.readyTtlMs : this.pendingTtlMs;
-    return Date.now() - session.created_at > ttl;
+    if (session.status === 'ready') return false;
+    return Date.now() - session.created_at > this.pendingTtlMs;
   }
 }
 
