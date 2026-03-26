@@ -1,5 +1,11 @@
 # Holo Joining Service
 
+[![npm: @holo-host/joining-service](https://img.shields.io/npm/v/@holo-host/joining-service)](https://www.npmjs.com/package/@holo-host/joining-service)
+[![License: CAL-1.0](https://img.shields.io/badge/License-CAL--1.0-blue.svg)](./LICENSE)
+
+> [!WARNING]
+> **Alpha software.** The joining service is under active development. APIs may change between releases. Not yet recommended for production use.
+
 Standardized REST API for onboarding agents into Holochain apps.
 
 ## What This Is
