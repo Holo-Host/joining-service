@@ -230,7 +230,10 @@ async function runHcAuth(subcommand: string, args: string[]): Promise<void> {
         lair,
       });
 
-      const fmt = (values['output-format'] as 'base64' | 'json' | 'conductor-yaml-patch') ?? 'base64';
+      const fmt = (values['output-format'] as string) ?? 'base64';
+      if (fmt !== 'base64' && fmt !== 'json' && fmt !== 'conductor-yaml-patch') {
+        die(`--output-format must be base64, json, or conductor-yaml-patch, got: ${fmt}`);
+      }
       const output = formatAuthOutput(result, fmt);
 
       const outputPath = values['output'] as string;

@@ -338,7 +338,7 @@ The config file is JSON. Top-level keys `linker_registrations` and `http_gateway
 | `allowed_agents` | string[] | — | Agent public keys (for `agent_allow_list` auth) |
 | `session.store` | `"memory"` \| `"sqlite"` \| `"cloudflare-kv"` | `"memory"` | |
 | `session.db_path` | string | `./sessions.db` | SQLite path (sqlite store only) |
-| `session.pending_ttl_seconds` | number | 86400 | TTL for pending (unapproved) sessions. Ready sessions never expire. |
+| `session.pending_ttl_seconds` | number | 86400 | TTL for pending (unapproved) sessions. Ready sessions never expire — for memory/SQLite stores this means unbounded growth over time. At high scale, consider periodic pruning of old ready sessions or switching to Cloudflare KV with its built-in expiration. |
 | `reconnect.enabled` | boolean | true | Allow `POST /v1/reconnect` |
 | `reconnect.timestamp_tolerance_seconds` | number | 300 | Max clock drift (seconds) for reconnect signature |
 | `base_url` | string | auto-detected | Override for `/.well-known/holo-joining` response |

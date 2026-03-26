@@ -169,6 +169,9 @@ export function provisionToRolesSettingsYaml(
         lines.push(`    network_seed: "${prov.dna_modifiers.network_seed}"`);
       }
       if (prov.dna_modifiers.properties) {
+        // Single-quoted to prevent YAML misparse of JSON metacharacters.
+        // Limitation: if a property value contains a literal single quote,
+        // the YAML will be malformed. Use a proper YAML library if that arises.
         lines.push(`    properties: '${JSON.stringify(prov.dna_modifiers.properties)}'`);
       }
     }

@@ -85,7 +85,9 @@ async fn main() -> anyhow::Result<()> {
             let raw = B64.decode(b64_part)?;
             anyhow::ensure!(raw.len() == 39, "expected 39 decoded bytes, got {}", raw.len());
 
-            // Validate using holo_hash — checks the type prefix bytes are correct for AgentPubKey
+            // Validate prefix bytes via holo_hash. from_raw_39 panics on invalid prefix —
+            // this is intentional validation. If holo_hash ever changes to return Result,
+            // this line must be updated to propagate the error.
             let _ = AgentPubKey::from_raw_39(raw.clone());
 
             // Raw ed25519 key occupies bytes 3..35
