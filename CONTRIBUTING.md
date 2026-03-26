@@ -104,6 +104,7 @@ Type assertions in tests hide the exact class of bugs that types catch.
 - [JOINING_SERVICE_API.md](./JOINING_SERVICE_API.md) -- REST API specification
 - [ARCHITECTURE.md](./ARCHITECTURE.md) -- System design and deployment profiles
 - [DEPLOYMENT.md](./DEPLOYMENT.md) -- Deployment guide
+- [CLI.md](./CLI.md) -- joining-cli tool for headless node provisioning
 
 ## Submitting Changes
 

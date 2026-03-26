@@ -9,8 +9,7 @@
  *   hc-auth register       Admin-side register and authorize an agent
  */
 
-import { readFileSync } from 'node:fs';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import {
   provision,
@@ -37,8 +36,8 @@ function env(name: string): string | undefined {
 }
 
 function requireArg(value: string | undefined, name: string): string {
-  if (!value) die(`${name} is required`);
-  return value!;
+  if (value === undefined || value === '') die(`${name} is required`);
+  return value;
 }
 
 function readPassphrase(path: string): string {
@@ -47,6 +46,12 @@ function readPassphrase(path: string): string {
   } catch (err) {
     die(`Cannot read passphrase file ${path}: ${(err as Error).message}`);
   }
+}
+
+function parsePollTimeout(val: string): number {
+  const n = parseInt(val, 10);
+  if (isNaN(n) || n <= 0) die('--poll-timeout must be a positive integer');
+  return n;
 }
 
 function buildLairOptions(values: Record<string, unknown>): LairSignerOptions | undefined {
@@ -176,7 +181,7 @@ async function runProvision(args: string[]): Promise<void> {
     claims: Object.keys(claims).length > 0 ? claims : undefined,
     format: format as 'yaml' | 'json',
     quiet: values['quiet'] as boolean,
-    pollTimeout: values['poll-timeout'] ? parseInt(values['poll-timeout'] as string, 10) : undefined,
+    pollTimeout: values['poll-timeout'] ? parsePollTimeout(values['poll-timeout'] as string) : undefined,
   });
 
   const output = format === 'yaml'
@@ -222,8 +227,7 @@ async function runHcAuth(subcommand: string, args: string[]): Promise<void> {
       const result = await authenticate({
         hcAuthUrl,
         agentKey,
-        lair: lair!,
-        outputFormat: (values['output-format'] as string as 'base64' | 'json' | 'conductor-yaml-patch') ?? 'base64',
+        lair,
       });
 
       const fmt = (values['output-format'] as 'base64' | 'json' | 'conductor-yaml-patch') ?? 'base64';
@@ -240,9 +244,7 @@ async function runHcAuth(subcommand: string, args: string[]): Promise<void> {
 
     case 'check': {
       const token = (values['hc-auth-token'] as string) ?? env('HC_AUTH_TOKEN');
-      if (!token) die('--hc-auth-token or HC_AUTH_TOKEN env is required');
-
-      const output = await check({ hcAuthUrl, apiToken: token!, agentKey });
+      const output = await check({ hcAuthUrl, apiToken: token, agentKey });
       process.stdout.write(output + '\n');
       break;
     }
@@ -251,7 +253,7 @@ async function runHcAuth(subcommand: string, args: string[]): Promise<void> {
       const token = (values['hc-auth-token'] as string) ?? env('HC_AUTH_TOKEN');
       if (!token) die('--hc-auth-token or HC_AUTH_TOKEN env is required');
 
-      const output = await register({ hcAuthUrl, apiToken: token!, agentKey });
+      const output = await register({ hcAuthUrl, apiToken: token, agentKey });
       process.stdout.write(output + '\n');
       break;
     }

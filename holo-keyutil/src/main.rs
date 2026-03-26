@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use holo_hash::AgentPubKey;
 use lair_keystore_api::ipc_keystore::ipc_keystore_connect;
 use lair_keystore_api::prelude::*;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -27,8 +28,6 @@ enum Command {
     Sign {
         /// Lair connection URL (e.g. unix:///path/to/socket)
         lair_url: String,
-        /// Lair passphrase
-        passphrase: String,
         /// Agent public key as base64url (no padding)
         #[arg(allow_hyphen_values = true)]
         pubkey: String,
@@ -50,12 +49,16 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Sign {
             lair_url,
-            passphrase,
             pubkey,
             data,
         } => {
+            // Read passphrase from stdin to avoid exposing it in /proc/<pid>/cmdline
+            let mut passphrase_str = String::new();
+            std::io::stdin().read_to_string(&mut passphrase_str)?;
+            let passphrase_str = passphrase_str.trim_end_matches('\n');
+
             let connection_url: url::Url = lair_url.parse()?;
-            let locked = sodoken::LockedArray::from(passphrase.as_bytes().to_vec());
+            let locked = sodoken::LockedArray::from(passphrase_str.as_bytes().to_vec());
             let passphrase = Arc::new(Mutex::new(locked));
             let client = ipc_keystore_connect(connection_url, passphrase).await?;
 

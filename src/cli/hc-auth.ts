@@ -17,13 +17,12 @@ export interface AuthenticateOptions {
   hcAuthUrl: string;
   agentKey: string;
   lair: LairSignerOptions;
-  /** 'base64' outputs just the base64 string; 'json' outputs the full auth body */
-  outputFormat?: 'base64' | 'json' | 'conductor-yaml-patch';
 }
 
 export interface CheckOptions {
   hcAuthUrl: string;
-  apiToken: string;
+  /** When omitted, only connectivity is checked (no agent state lookup). */
+  apiToken?: string;
   agentKey: string;
 }
 
@@ -68,6 +67,8 @@ export async function authenticate(
     signature,
   });
 
+  // Content-Type is intentionally application/octet-stream — the hc-auth server
+  // treats the body as opaque bytes to base64-encode, not as parsed JSON.
   const authResp = await fetch(`${baseUrl}/authenticate`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/octet-stream' },
@@ -119,15 +120,28 @@ export function formatAuthOutput(
  * Diagnostic: check connectivity and agent state on hc-auth server.
  */
 export async function check(opts: CheckOptions): Promise<string> {
+  const lines: string[] = [];
+  lines.push(`hc-auth server: ${opts.hcAuthUrl}`);
+
+  if (!opts.apiToken) {
+    // No token — just check basic connectivity
+    try {
+      const resp = await fetch(`${opts.hcAuthUrl.replace(/\/$/, '')}/now`);
+      lines.push(`  connectivity: ok (HTTP ${resp.status})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      lines.push(`  connectivity: failed (${msg})`);
+    }
+    lines.push(`  agent state: skipped (no API token provided)`);
+    return lines.join('\n');
+  }
+
   const config: HcAuthConfig = {
     url: opts.hcAuthUrl,
     api_token: opts.apiToken,
   };
   const client = new HcAuthClient(config);
   const rawKey = agentKeyToRawEd25519Base64url(opts.agentKey);
-
-  const lines: string[] = [];
-  lines.push(`hc-auth server: ${opts.hcAuthUrl}`);
 
   try {
     const record = await client.getRecord(rawKey);

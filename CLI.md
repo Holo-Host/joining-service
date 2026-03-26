@@ -4,7 +4,7 @@ Command-line tool for provisioning headless Holochain nodes that run without a U
 
 ## Prerequisites
 
-- **holo-keyutil** — Rust binary that signs data via a running lair-keystore instance. Source is in `holo-keyutil/` in this repo. Build with `cargo build --release` and place the binary in PATH (or use `--keyutil-bin` to specify its location).
+- **holo-keyutil** — Rust binary that signs data via a running lair-keystore instance. The lair passphrase is read from stdin (never passed as a CLI argument) to avoid leaking it in process listings. Source is in `holo-keyutil/` in this repo. Build with `cargo build --release` and place the binary in PATH (or use `--keyutil-bin` to specify its location).
 - **lair-keystore** — Must be running and accessible via IPC URL. The conductor's lair instance is used so that signing happens with the same keys the conductor uses.
 - **hc** — Holochain CLI, used to generate agent keys and install apps on the conductor.
 

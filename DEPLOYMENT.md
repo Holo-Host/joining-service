@@ -788,6 +788,10 @@ location = /.well-known/holo-joining {
 
 If the joining service runs on the same domain as the hApp UI (same nginx vhost), the built-in `GET /.well-known/holo-joining` handler covers this without extra configuration.
 
+### Headless node provisioning
+
+For nodes without a UI (e.g. systemd-managed conductors), use `joining-cli` to run the join flow, generate roles-settings YAML, and handle hc-auth authentication from the command line. See [CLI.md](./CLI.md) for full usage.
+
 ### Verify the deployment
 
 ```sh

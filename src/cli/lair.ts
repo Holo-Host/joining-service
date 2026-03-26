@@ -38,15 +38,31 @@ export async function lairSign(
 ): Promise<string> {
   const bin = opts.keyutilBin ?? DEFAULT_KEYUTIL_BIN;
 
-  const { stdout } = await execFileAsync(bin, [
+  // Passphrase is piped via stdin to avoid exposing it in /proc/<pid>/cmdline
+  const stdout = await execWithStdin(bin, [
     'sign',
     opts.lairUrl,
-    opts.passphrase,
     pubKeyB64url,
     dataB64url,
-  ]);
+  ], opts.passphrase);
 
   return stdout.trim();
+}
+
+/** Run a command, piping input to its stdin, and return stdout. */
+function execWithStdin(bin: string, args: string[], stdin: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(bin, args, (err, stdout, stderr) => {
+      if (err) {
+        const msg = stderr?.trim() || err.message;
+        reject(new Error(`${bin} failed: ${msg}`));
+        return;
+      }
+      resolve(stdout);
+    });
+    child.stdin?.write(stdin);
+    child.stdin?.end();
+  });
 }
 
 /**

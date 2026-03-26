@@ -10,7 +10,7 @@
  *   5. Output roles-settings YAML for hc install-app
  */
 
-import { JoiningClient } from '../client/joining.js';
+import { JoiningClient, JoinSession } from '../client/joining.js';
 import type { Challenge, JoinProvision } from '../types.js';
 import { lairSign, extractPubKey, type LairSignerOptions } from './lair.js';
 
@@ -113,9 +113,9 @@ export async function provision(opts: ProvisionOptions): Promise<JoinProvision> 
  */
 async function handleAllowListChallenge(
   opts: ProvisionOptions,
-  session: Awaited<ReturnType<JoiningClient['join']>>,
+  session: JoinSession,
   challenge: Challenge,
-): Promise<Awaited<ReturnType<JoiningClient['join']>>> {
+): Promise<JoinSession> {
   if (!opts.lair) {
     throw new Error(
       'agent_allow_list challenge requires --lair-url and --lair-passphrase-file',
@@ -149,7 +149,7 @@ async function handleAllowListChallenge(
  *
  * When membrane_proofs keys are role names (from role-keyed dna_hashes config),
  * they map directly to YAML role entries. When they are DNA hashes,
- * we still output them but warn the user that manual mapping may be needed.
+ * they are output as-is — the caller is responsible for mapping them to roles.
  */
 export function provisionToRolesSettingsYaml(
   prov: JoinProvision,
@@ -160,13 +160,13 @@ export function provisionToRolesSettingsYaml(
 
   const lines: string[] = [];
   for (const [key, proofBase64] of Object.entries(prov.membrane_proofs)) {
-    lines.push(`${key}:`);
+    lines.push(`"${key}":`);
     lines.push(`  type: provisioned`);
     lines.push(`  membrane_proof: "${proofBase64}"`);
     if (prov.dna_modifiers) {
       lines.push(`  modifiers:`);
       if (prov.dna_modifiers.network_seed) {
-        lines.push(`    network_seed: ${prov.dna_modifiers.network_seed}`);
+        lines.push(`    network_seed: "${prov.dna_modifiers.network_seed}"`);
       }
       if (prov.dna_modifiers.properties) {
         lines.push(`    properties: ${JSON.stringify(prov.dna_modifiers.properties)}`);
@@ -189,6 +189,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Raw base64 <-> base64url conversion (no HoloHash u-prefix handling).
+// Distinct from the HoloHash-aware helpers in ../utils.ts.
 function base64ToBase64url(s: string): string {
   return s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
