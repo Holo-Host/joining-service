@@ -113,7 +113,6 @@ describe('SqliteSessionStore', () => {
     const shortStore = new SqliteSessionStore(
       join(tmpDir, 'short-ttl.db'),
       1, // 1 second pending TTL
-      86400,
     );
 
     const session = makeSession({
@@ -157,11 +156,10 @@ describe('SqliteSessionStore', () => {
     store2.close();
   });
 
-  it('cleanup removes expired sessions', async () => {
+  it('cleanup removes expired pending sessions but keeps ready sessions', async () => {
     const shortStore = new SqliteSessionStore(
       join(tmpDir, 'cleanup.db'),
       1, // 1 second pending TTL
-      1, // 1 second ready TTL
     );
 
     await shortStore.create(
@@ -189,9 +187,10 @@ describe('SqliteSessionStore', () => {
 
     shortStore.cleanup();
 
-    // Old sessions should be gone
+    // Old pending session should be gone
     expect(await shortStore.get('js_old_pending')).toBeNull();
-    expect(await shortStore.get('js_old_ready')).toBeNull();
+    // Ready sessions never expire (even old ones)
+    expect(await shortStore.get('js_old_ready')).not.toBeNull();
     // Fresh session should remain
     expect(await shortStore.get('js_fresh')).not.toBeNull();
 

@@ -216,7 +216,7 @@ Create a `config.json` in the project root. Minimum viable config (no membrane p
     "happ_bundle_url": "http://localhost:8080/my-happ.happ"
   },
   "auth_methods": ["open"],
-  "linker_urls": ["wss://linker.example.com:8090"]
+  "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}]
 }
 ```
 
@@ -229,7 +229,7 @@ With email-code auth and file transport (codes written to disk, not sent):
     "name": "My hApp"
   },
   "auth_methods": ["email_code"],
-  "linker_urls": ["wss://linker.example.com:8090"],
+  "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
   "email": {
     "provider": "file",
     "output_dir": "./dev-emails"
@@ -252,7 +252,7 @@ With membrane proofs (dev — ephemeral key, NOT safe for production):
     "name": "My hApp"
   },
   "auth_methods": ["open"],
-  "linker_urls": ["wss://linker.example.com:8090"],
+  "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
   "dna_hashes": ["uhC0k..."],
   "membrane_proof": {
     "enabled": true
@@ -271,7 +271,7 @@ With membrane proofs (production — stable key):
     "name": "My hApp"
   },
   "auth_methods": ["open"],
-  "linker_urls": ["wss://linker.example.com:8090"],
+  "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
   "dna_hashes": ["uhC0k..."],
   "dna_modifiers": {
     "network_seed": "my-happ-mainnet-2026"
@@ -311,29 +311,36 @@ curl http://localhost:3000/v1/info
 
 ### Configuration reference
 
+The config file is JSON. Top-level keys `linker_registrations` and `http_gateways` are extracted before the rest is passed to `resolveConfig()`. All other fields map to the `ServiceConfig` interface in `src/config.ts`.
+
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `happ.id` | string | required | Machine-readable identifier |
 | `happ.name` | string | required | Display name |
+| `happ.description` | string | — | Optional description |
+| `happ.icon_url` | string | — | Icon URL for display |
 | `happ.happ_bundle_url` | string | — | URL clients use to fetch the .happ bundle |
-| `auth_methods` | string[] | required | e.g. `["open"]`, `["email_code"]`, `["invite_code"]` |
-| `linker_urls` | string[] | required | WebSocket URLs for the linker relay |
-| `http_gateways` | array | — | Read-only gateway instances |
-| `dna_hashes` | string[] | — | Required when `membrane_proof.enabled` is true |
+| `auth_methods` | AuthMethodEntry[] | required | e.g. `["open"]`, `["email_code"]`, `["invite_code"]`, `[{"any_of": ["invite_code", "agent_allow_list"]}]` |
+| `linker_registrations` | LinkerRegistration[] | — | Top-level config key (not in ServiceConfig). Array of `{linker_url: {url}, admin?: {url, secret}}` objects |
+| `http_gateways` | HttpGateway[] | — | Top-level config key (not in ServiceConfig). Read-only gateway instances |
+| `linker_info.selection_mode` | `"assigned"` \| `"client_choice"` | — | How linker URLs are assigned to agents |
+| `linker_info.region_hints` | string[] | — | Region hints for linker selection |
+| `dna_hashes` | string[] \| Record\<string, string\> | — | Required when `membrane_proof.enabled` is true. Flat list or `{role_name: dna_hash}` map |
 | `dna_modifiers.network_seed` | string | — | DNA network seed |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
-| `email.provider` | `"postmark"` \| `"file"` | — | Required for `email_code` auth |
-| `email.api_key` | string | — | Postmark server token |
-| `email.from` | string | — | Sender address for Postmark |
+| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` auth |
+| `email.api_key` | string | — | Postmark or SendGrid API token |
+| `email.from` | string | — | Sender address |
+| `email.template` | string | — | Custom email template |
 | `email.output_dir` | string | `./dev-emails` | Directory for file transport output |
 | `invite_codes` | string[] | — | Valid invite codes (for `invite_code` auth) |
+| `allowed_agents` | string[] | — | Agent public keys (for `agent_allow_list` auth) |
 | `session.store` | `"memory"` \| `"sqlite"` \| `"cloudflare-kv"` | `"memory"` | |
 | `session.db_path` | string | `./sessions.db` | SQLite path (sqlite store only) |
-| `session.pending_ttl_seconds` | number | 3600 | |
-| `session.ready_ttl_seconds` | number | 86400 | |
-| `linker_urls_expire_after_seconds` | number | 21600 | 6 hours |
+| `session.pending_ttl_seconds` | number | 86400 | TTL for pending (unapproved) sessions. Ready sessions never expire — for memory/SQLite stores this means unbounded growth over time. At high scale, consider periodic pruning of old ready sessions or switching to Cloudflare KV with its built-in expiration. |
 | `reconnect.enabled` | boolean | true | Allow `POST /v1/reconnect` |
+| `reconnect.timestamp_tolerance_seconds` | number | 300 | Max clock drift (seconds) for reconnect signature |
 | `base_url` | string | auto-detected | Override for `/.well-known/holo-joining` response |
 | `port` | number | 3000 | |
 | `network.bootstrap_url` | string | — | Bootstrap server URL (returned in provision response `network_config`) |
@@ -342,6 +349,8 @@ curl http://localhost:3000/v1/info
 | `hc_auth.url` | string | — | Base URL of hc-auth-server (e.g. `https://auth.example.com`). Also used as `auth_server_url` in provision response `network_config`. |
 | `hc_auth.api_token` | string | — | Bearer token from the server's `API_TOKENS` env var |
 | `hc_auth.required` | boolean | false | Block provisioning/reconnect if hc-auth is unreachable |
+| `linker_auth` | LinkerAuthConfig | — | Linker authentication configuration |
+| `delegated_verification` | DelegatedVerificationConfig | — | Configuration for delegated verification auth method |
 
 ---
 
@@ -512,97 +521,52 @@ binding = "SESSIONS"
 id = "<your-production-kv-id>"
 preview_id = "<your-preview-kv-id>"
 
-[vars]
-HAPP_ID = "my-happ"
-HAPP_NAME = "My hApp"
-HAPP_BUNDLE_URL = "https://app.example.com/my-happ.happ"
-LINKER_URLS = '["wss://linker.example.com:8090"]'
-AUTH_METHODS = '["open"]'
-DNA_HASHES = '["uhC0k..."]'
-BASE_URL = "https://joining.example.com/v1"
+# CONFIG_JSON is set as a secret (see below), not a var.
+# Linker registrations are stored in the SESSIONS KV namespace.
 ```
 
-Secrets (never in `wrangler.toml`):
+Secrets:
 
 ```sh
-wrangler secret put POSTMARK_API_KEY
-# The 64-char hex seed from gen-signing-key.mjs:
-wrangler secret put MEMBRANE_PROOF_SIGNING_KEY
+# Full service config as JSON:
+echo '{"happ":{"id":"my-happ","name":"My hApp"},"auth_methods":["open"]}' | wrangler secret put CONFIG_JSON
+# The 64-char hex seed from gen-signing-key.mjs (if using membrane proofs):
+wrangler secret put SIGNING_KEY_HEX
 ```
 
-The `MEMBRANE_PROOF_SIGNING_KEY` secret must be the hex seed whose derived public key matches the progenitor embedded in your DNA. See the [membrane proof section](#membrane-proof-signing-key-and-dna-progenitor).
+The `SIGNING_KEY_HEX` secret must be the hex seed whose derived public key matches the progenitor embedded in your DNA. See the [membrane proof section](#membrane-proof-signing-key-and-dna-progenitor).
+
+Linker registrations are stored in the KV namespace (written via `wrangler kv key put` or the deploy script's `seed-kv` command).
 
 ### Worker entry point
 
-Create `src/worker.ts`:
+The actual worker entry point is at `deploy/cloudflare/worker-entry.ts`. It reads a `CONFIG_JSON` secret (the full config as JSON) and uses `KvUrlProvider` for linker URLs stored in the SESSIONS KV namespace. See that file for the production implementation.
+
+Below is a simplified example for reference:
 
 ```typescript
 import { createApp, resolveConfig } from './index.js';
 import { KvSessionStore } from './session/kv-store.js';
 import { OpenAuthMethod } from './auth-methods/open.js';
-import { EmailCodeAuthMethod } from './auth-methods/email-code.js';
-import { PostmarkTransport } from './email/postmark.js';
-import { LairProofGenerator } from './membrane-proof/lair-signer.js';
 
 interface Env {
   SESSIONS: KVNamespace;
-  HAPP_ID: string;
-  HAPP_NAME: string;
-  HAPP_BUNDLE_URL?: string;
-  LINKER_URLS: string;           // JSON array string
-  AUTH_METHODS: string;          // JSON array string
-  DNA_HASHES?: string;           // JSON array string
-  BASE_URL?: string;
-  POSTMARK_API_KEY?: string;
-  POSTMARK_FROM?: string;
-  MEMBRANE_PROOF_SIGNING_KEY?: string;  // 64-char hex seed
+  CONFIG_JSON: string;
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const linkerUrls: string[] = JSON.parse(env.LINKER_URLS);
-    const authMethods: string[] = JSON.parse(env.AUTH_METHODS);
-    const dnaHashes: string[] | undefined = env.DNA_HASHES
-      ? JSON.parse(env.DNA_HASHES)
-      : undefined;
-
-    const config = resolveConfig({
-      happ: {
-        id: env.HAPP_ID,
-        name: env.HAPP_NAME,
-        happ_bundle_url: env.HAPP_BUNDLE_URL,
-      },
-      auth_methods: authMethods as any,
-      linker_urls: linkerUrls,
-      base_url: env.BASE_URL,
-      dna_hashes: dnaHashes,
-      membrane_proof: env.MEMBRANE_PROOF_SIGNING_KEY
-        ? { enabled: true }
-        : undefined,
-      session: { store: 'cloudflare-kv' },
-    });
-
-    const sessionStore = new KvSessionStore(env.SESSIONS);
+    const configInput = JSON.parse(env.CONFIG_JSON);
+    const config = resolveConfig(configInput);
+    const sessionStore = new KvSessionStore(
+      env.SESSIONS,
+      config.session?.pending_ttl_seconds,
+    );
 
     const authPlugins = new Map();
-    for (const method of authMethods) {
-      if (method === 'open') {
-        authPlugins.set('open', new OpenAuthMethod());
-      } else if (method === 'email_code' && env.POSTMARK_API_KEY) {
-        const transport = new PostmarkTransport(
-          env.POSTMARK_API_KEY,
-          env.POSTMARK_FROM ?? 'noreply@example.com',
-        );
-        authPlugins.set('email_code', new EmailCodeAuthMethod({ transport }));
-      }
-    }
+    authPlugins.set('open', new OpenAuthMethod());
 
-    let proofGenerator;
-    if (env.MEMBRANE_PROOF_SIGNING_KEY) {
-      proofGenerator = await LairProofGenerator.fromHex(env.MEMBRANE_PROOF_SIGNING_KEY);
-    }
-
-    const app = createApp({ config, sessionStore, authPlugins, proofGenerator });
+    const app = createApp({ config, sessionStore, authPlugins });
     return app.fetch(request);
   },
 };
@@ -677,7 +641,7 @@ Example `/etc/joining-service/config.json`:
     "happ_bundle_url": "https://app.example.com/my-happ.happ"
   },
   "auth_methods": ["email_code"],
-  "linker_urls": ["wss://linker.example.com:8090"],
+  "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
   "http_gateways": [
     {
       "url": "https://gw.example.com",
@@ -823,6 +787,10 @@ location = /.well-known/holo-joining {
 ```
 
 If the joining service runs on the same domain as the hApp UI (same nginx vhost), the built-in `GET /.well-known/holo-joining` handler covers this without extra configuration.
+
+### Headless node provisioning
+
+For nodes without a UI (e.g. systemd-managed conductors), use `joining-cli` to run the join flow, generate roles-settings YAML, and handle hc-auth authentication from the command line. See [CLI.md](./CLI.md) for full usage.
 
 ### Verify the deployment
 

@@ -1,5 +1,11 @@
 # Holo Joining Service
 
+[![npm: @holo-host/joining-service](https://img.shields.io/npm/v/@holo-host/joining-service)](https://www.npmjs.com/package/@holo-host/joining-service)
+[![License: CAL-1.0](https://img.shields.io/badge/License-CAL--1.0-blue.svg)](./LICENSE)
+
+> [!WARNING]
+> **Alpha software.** The joining service is under active development. APIs may change between releases. Not yet recommended for production use.
+
 Standardized REST API for onboarding agents into Holochain apps.
 
 ## What This Is
@@ -17,6 +23,7 @@ This service is not HWC-specific. It works for any Holochain deployment context 
 
 - [JOINING_SERVICE_API.md](./JOINING_SERVICE_API.md) — Full REST API specification
 - [DELEGATED_VERIFICATION.md](./DELEGATED_VERIFICATION.md) — Delegated verification setup and configuration
+- [CLI.md](./CLI.md) — `joining-cli` tool for headless node provisioning (membrane proofs, hc-auth, roles-settings YAML)
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Overview of the different node types the service supports, flow diagrams, and the spectrum of configuration profiles and development directions.
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — Deployment guide (local, Cloudflare Workers, edge node)
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — Development setup, code standards, and how to contribute

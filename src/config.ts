@@ -17,7 +17,14 @@ export interface ServiceConfig {
     selection_mode: 'assigned' | 'client_choice';
     region_hints?: string[];
   };
-  dna_hashes?: string[];
+  /**
+   * DNA hashes for membrane proof generation.
+   * Accepts either:
+   *   - string[] — flat list of DNA hashes (proofs keyed by hash in response)
+   *   - Record<string, string> — role_name → dna_hash (proofs keyed by role name)
+   * The role-keyed form is required for CLI provisioning (roles-settings YAML output).
+   */
+  dna_hashes?: string[] | Record<string, string>;
   dna_modifiers?: DnaModifiers;
   membrane_proof?: {
     enabled: boolean;
@@ -36,8 +43,8 @@ export interface ServiceConfig {
   session?: {
     store: 'memory' | 'sqlite' | 'cloudflare-kv';
     db_path?: string;
+    /** TTL for pending (not yet approved) sessions. Default: 86400 (24 hours). */
     pending_ttl_seconds?: number;
-    ready_ttl_seconds?: number;
   };
   reconnect?: {
     enabled?: boolean;
@@ -58,8 +65,7 @@ export interface ServiceConfig {
 const DEFAULTS = {
   session: {
     store: 'memory' as const,
-    pending_ttl_seconds: 3600,
-    ready_ttl_seconds: 86400,
+    pending_ttl_seconds: 86400,
   },
   reconnect: {
     enabled: true,

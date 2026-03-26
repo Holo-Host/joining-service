@@ -2,8 +2,23 @@
   "name": "@holo-host/joining-service",
   "version": "0.1.0",
   "description": "Reference joining service for Holochain hApps on Holo",
+  "license": "CAL-1.0",
   "type": "module",
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Holo-Host/joining-service"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "joining-cli": "dist/cli/index.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -41,7 +56,7 @@
     "gen-signing-key": "NODE_OPTIONS=--preserve-symlinks tsx scripts/gen-signing-key.ts"
   },
   "dependencies": {
-    "@holo-host/lair": "file:../holo-web-conductor/packages/lair",
+    "@holo-host/lair": "^0.1.0",
     "@hono/node-server": "^1.14.0",
     "@msgpack/msgpack": "^3.0.0",
     "@noble/ed25519": "^2.2.0",

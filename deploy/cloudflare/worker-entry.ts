@@ -141,8 +141,7 @@ export default {
 
     const sessionStore = new KvSessionStore(
       env.SESSIONS,
-      config.session?.pending_ttl_seconds ?? 3600,
-      config.session?.ready_ttl_seconds ?? 86400,
+      config.session?.pending_ttl_seconds ?? 86400,
     );
 
     const urlProvider = new KvUrlProvider(env.SESSIONS);

@@ -4,11 +4,9 @@ export class MemorySessionStore implements SessionStore {
   private sessions = new Map<string, SessionData>();
   private agentIndex = new Map<string, string>();
   private pendingTtlMs: number;
-  private readyTtlMs: number;
 
-  constructor(pendingTtlSeconds = 3600, readyTtlSeconds = 86400) {
+  constructor(pendingTtlSeconds = 86400) {
     this.pendingTtlMs = pendingTtlSeconds * 1000;
-    this.readyTtlMs = readyTtlSeconds * 1000;
   }
 
   async create(data: SessionData): Promise<void> {
@@ -50,9 +48,9 @@ export class MemorySessionStore implements SessionStore {
     return this.get(sessionId);
   }
 
+  /** Ready sessions never expire; pending sessions use the configured TTL. */
   private isExpired(session: SessionData): boolean {
-    const ttl =
-      session.status === 'ready' ? this.readyTtlMs : this.pendingTtlMs;
-    return Date.now() - session.created_at > ttl;
+    if (session.status === 'ready') return false;
+    return Date.now() - session.created_at > this.pendingTtlMs;
   }
 }

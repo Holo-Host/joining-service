@@ -157,14 +157,13 @@ async function buildProofGenerator(
 
 function buildSessionStore(config: ServiceConfig): SessionStore {
   const pendingTtl = config.session!.pending_ttl_seconds;
-  const readyTtl = config.session!.ready_ttl_seconds;
 
   if (config.session!.store === 'sqlite') {
     const dbPath = config.session!.db_path ?? './sessions.db';
-    return new SqliteSessionStore(dbPath, pendingTtl, readyTtl);
+    return new SqliteSessionStore(dbPath, pendingTtl);
   }
 
-  return new MemorySessionStore(pendingTtl, readyTtl);
+  return new MemorySessionStore(pendingTtl);
 }
 
 export async function startServer(

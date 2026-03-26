@@ -6,5 +6,7 @@ tsconfig.tsbuildinfo
 *.db-wal
 dev-emails/
 .env
-.claude/settings.local.json
+config*.json
+holo-keyutil/target/
+.claude/
 CLAUDE.md

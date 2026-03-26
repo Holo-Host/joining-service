@@ -34,7 +34,7 @@ describe('KvSessionStore', () => {
 
   beforeEach(() => {
     kv = createMockKV();
-    store = new KvSessionStore(kv, 3600, 86400);
+    store = new KvSessionStore(kv, 86400);
   });
 
   describe('create', () => {
@@ -46,23 +46,23 @@ describe('KvSessionStore', () => {
       expect(kv.put).toHaveBeenCalledWith(
         'session:sess-123',
         JSON.stringify(session),
-        { expirationTtl: 3600 },
+        { expirationTtl: 86400 },
       );
       expect(kv.put).toHaveBeenCalledWith(
         'agent:uhCAk_test_agent_key',
         'sess-123',
-        { expirationTtl: 3600 },
+        { expirationTtl: 86400 },
       );
     });
 
-    it('uses ready TTL for ready sessions', async () => {
+    it('does not set TTL for ready sessions', async () => {
       const session = makeSession({ status: 'ready' });
       await store.create(session);
 
       expect(kv.put).toHaveBeenCalledWith(
         'session:sess-123',
         expect.any(String),
-        { expirationTtl: 86400 },
+        {},
       );
     });
   });
@@ -94,18 +94,18 @@ describe('KvSessionStore', () => {
       expect(result?.agent_key).toBe('uhCAk_test_agent_key');
     });
 
-    it('refreshes agent index TTL on status change', async () => {
+    it('refreshes agent index on status change', async () => {
       const session = makeSession();
       await store.create(session);
       kv.put.mockClear();
 
       await store.update('sess-123', { status: 'ready' });
 
-      // Should write both session and agent index
+      // Should write both session and agent index (no TTL for ready)
       expect(kv.put).toHaveBeenCalledWith(
         'agent:uhCAk_test_agent_key',
         'sess-123',
-        { expirationTtl: 86400 },
+        {},
       );
     });
 

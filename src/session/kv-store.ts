@@ -22,29 +22,26 @@ const AGENT_INDEX_PREFIX = 'agent:';
 export class KvSessionStore implements SessionStore {
   private kv: KVNamespace;
   private pendingTtlSeconds: number;
-  private readyTtlSeconds: number;
 
   constructor(
     kv: KVNamespace,
-    pendingTtlSeconds = 3600,
-    readyTtlSeconds = 86400,
+    pendingTtlSeconds = 86400,
   ) {
     this.kv = kv;
     this.pendingTtlSeconds = pendingTtlSeconds;
-    this.readyTtlSeconds = readyTtlSeconds;
   }
 
   async create(data: SessionData): Promise<void> {
-    const ttl = this.ttlForStatus(data.status);
+    const opts = this.kvOptions(data.status);
     await this.kv.put(
       SESSION_PREFIX + data.id,
       JSON.stringify(data),
-      { expirationTtl: ttl },
+      opts,
     );
     await this.kv.put(
       AGENT_INDEX_PREFIX + data.agent_key,
       data.id,
-      { expirationTtl: ttl },
+      opts,
     );
   }
 
@@ -59,20 +56,20 @@ export class KvSessionStore implements SessionStore {
     if (!existing) return;
 
     const updated = { ...existing, ...data };
-    const ttl = this.ttlForStatus(updated.status);
+    const opts = this.kvOptions(updated.status);
 
     await this.kv.put(
       SESSION_PREFIX + sessionId,
       JSON.stringify(updated),
-      { expirationTtl: ttl },
+      opts,
     );
 
-    // Refresh the agent index TTL if status changed
+    // Refresh the agent index entry if status changed
     if (data.status) {
       await this.kv.put(
         AGENT_INDEX_PREFIX + updated.agent_key,
         sessionId,
-        { expirationTtl: ttl },
+        opts,
       );
     }
   }
@@ -91,7 +88,8 @@ export class KvSessionStore implements SessionStore {
     return this.get(sessionId);
   }
 
-  private ttlForStatus(status: string): number {
-    return status === 'ready' ? this.readyTtlSeconds : this.pendingTtlSeconds;
+  /** Ready sessions never expire; pending sessions use the configured TTL. */
+  private kvOptions(status: string): { expirationTtl?: number } {
+    return status === 'ready' ? {} : { expirationTtl: this.pendingTtlSeconds };
   }
 }
