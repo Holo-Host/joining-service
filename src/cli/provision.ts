@@ -169,7 +169,7 @@ export function provisionToRolesSettingsYaml(
         lines.push(`    network_seed: "${prov.dna_modifiers.network_seed}"`);
       }
       if (prov.dna_modifiers.properties) {
-        lines.push(`    properties: ${JSON.stringify(prov.dna_modifiers.properties)}`);
+        lines.push(`    properties: '${JSON.stringify(prov.dna_modifiers.properties)}'`);
       }
     }
   }

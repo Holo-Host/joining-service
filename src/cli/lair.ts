@@ -60,8 +60,12 @@ function execWithStdin(bin: string, args: string[], stdin: string): Promise<stri
       }
       resolve(stdout);
     });
-    child.stdin?.write(stdin);
-    child.stdin?.end();
+    if (!child.stdin) {
+      reject(new Error(`${bin}: failed to open stdin pipe`));
+      return;
+    }
+    child.stdin.write(stdin);
+    child.stdin.end();
   });
 }
 
