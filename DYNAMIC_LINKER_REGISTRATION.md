@@ -34,7 +34,7 @@ This design requires the keypair to be **persistent**:
 
 - On first run, generate a keypair and write it to disk (configurable path via `H2HC_LINKER_KEY_FILE`, default `./linker-key.ed25519`)
 - On subsequent runs, load the existing keypair
-- For container deployments where files are impractical, accept `H2HC_LINKER_PRIVATE_KEY` as an env var (base64-encoded)
+- For container deployments where files are impractical, accept `H2HC_LINKER_PRIVATE_KEY` as an env var (base64-encoded). **Security note:** environment variables are more easily leaked than files (`docker inspect`, CI log capture, `/proc/*/environ`, shell history). The file-based approach (`H2HC_LINKER_KEY_FILE`) is the recommended default; the env var is a last resort for environments where file mounts are impossible.
 - The same keypair is used for both report signing and registration
 
 The public key becomes the linker's stable identifier across URL changes, restarts, and redeployments.
@@ -73,7 +73,7 @@ H2HC_LINKER_JOINING_SERVICE_URL=https://join.example.com
 H2HC_LINKER_INVITE_TOKEN=lnk_abc123...
 H2HC_LINKER_PUBLIC_URL=wss://my-linker.example.com:8090
 H2HC_LINKER_KEY_FILE=./linker.key
-H2HC_LINKER_ADMIN_SECRET=my-chosen-admin-secret
+H2HC_LINKER_ADMIN_SECRET=my-chosen-admin-secret   # sent on first heartbeat only
 ```
 
 ### Step 3: Linker Heartbeats
@@ -85,39 +85,67 @@ POST /v1/linkers/heartbeat
 
 {
   "pubkey": "<base64 ed25519 public key>",
-  "invite_token": "lnk_abc123...",
+  "invite_token": "lnk_abc123...",       // required on first heartbeat, omitted after
   "linker_url": "wss://my-linker.example.com:8090",
   "admin_url": "https://my-linker.example.com",
-  "admin_secret": "<bearer token for /admin/agents callbacks>",
-  "timestamp": "2026-03-31T12:00:00Z",
+  "admin_secret": "<bearer token>",       // required on first heartbeat; omitted on subsequent unless rotating
+  "rotate_secret": false,                 // set true to update admin_secret on a subsequent heartbeat
+  "timestamp": "2026-03-31T12:00:00.000Z",
   "signature": "<base64 ed25519 signature>"
 }
 
 Response:
 {
   "registered": true,
-  "ttl_seconds": 300
+  "ttl_seconds": 600
 }
 ```
 
-The signature covers: `pubkey + linker_url + admin_url + timestamp` (concatenated canonical form). This proves the caller owns the private key corresponding to the declared pubkey.
+#### Signature Format
+
+The signature is an ed25519 signature over a **canonical JSON** payload: a JSON object with alphabetically sorted keys, no whitespace, UTF-8 encoded. The signed fields vary depending on whether `admin_secret` is present:
+
+**First heartbeat or secret rotation (admin_secret present):**
+```
+sign(UTF-8(JSON.stringify({admin_secret, admin_url, linker_url, pubkey, timestamp})))
+```
+
+**Subsequent heartbeats (admin_secret omitted):**
+```
+sign(UTF-8(JSON.stringify({admin_url, linker_url, pubkey, timestamp})))
+```
+
+This canonical form is unambiguous across Rust (`serde_json` with `sorted_keys`) and TypeScript (`JSON.stringify` with sorted keys). The `admin_secret` is always covered by the signature when transmitted, preventing credential substitution via replay.
+
+#### Replay Protection
+
+The joining service enforces two constraints to prevent heartbeat replay:
+
+1. **Timestamp tolerance window:** the heartbeat `timestamp` must be within ±30 seconds of the server's current time. Heartbeats outside this window are rejected with `400`.
+2. **Monotonic timestamp per pubkey:** for a registered linker, the heartbeat `timestamp` must be strictly greater than the stored `last_heartbeat`. This prevents replay of captured heartbeats within the tolerance window. The `last_heartbeat` field on `RegisteredLinker` (already part of the data model) serves as the high-water mark.
 
 ### Step 4: Joining Service Processes the Heartbeat
 
 On receiving a heartbeat, the joining service:
 
-1. **First heartbeat (invite_token present):**
+0. **Replay checks (all heartbeats):**
+   - Rejects if `timestamp` is outside ±30s of server time (`400`)
+   - For known pubkeys, rejects if `timestamp <= last_heartbeat` (`400`)
+
+1. **First heartbeat (invite_token present, pubkey not yet registered):**
    - Validates the invite token exists and is not expired or exhausted
-   - Verifies the ed25519 signature
+   - Verifies the ed25519 signature (which covers `admin_secret`)
+   - Requires `admin_secret` to be present (`400` if missing)
    - Binds the pubkey to the invite (records it in `used_by`)
    - Creates a `RegisteredLinker` entry with capabilities from the invite
-   - Stores the admin_secret for agent authorization callbacks
+   - Stores the `admin_secret` for agent authorization callbacks
 
 2. **Subsequent heartbeats (pubkey already registered):**
    - Looks up the pubkey in registered linkers
    - Verifies the signature
-   - Updates `linker_url`, `admin_url`, `admin_secret`, and `last_heartbeat`
-   - Resets `expires_at` to `now + TTL`
+   - Updates `linker_url`, `admin_url`, and `last_heartbeat`
+   - If `admin_secret` is present and `rotate_secret` is true, updates the stored `admin_secret`
+   - Resets KV `expirationTtl` to `TTL`
    - The `invite_token` field is ignored (can be omitted)
 
 3. **Expired or unknown pubkey, invalid invite:**
@@ -140,23 +168,30 @@ No manual intervention required. The pubkey is stable; only the URL changes.
 
 ## Liveness and Expiry
 
-- Each heartbeat resets the linker's `expires_at` to `last_heartbeat + TTL` (e.g., 5 minutes)
-- If a linker stops heartbeating (crash, network loss, shutdown), its entry expires
-- The `getLinkerRegistrations()` method filters out expired entries at read time
-- Optionally, a Cloudflare Cron Trigger runs periodically to clean up expired entries from KV
+- Each heartbeat resets the linker's TTL. The joining service uses Cloudflare KV's native `expirationTtl` on each write, consistent with how sessions already work. Entries disappear automatically when the TTL elapses; no Cron Trigger cleanup is needed.
+- Default TTL is 600 seconds (10 minutes). Heartbeat interval is `TTL / 3` (~200 seconds), so a linker must miss 3 consecutive heartbeats before expiry. Both values are configurable via `ServiceConfig.linker_auth.ttl_seconds` and `ServiceConfig.linker_auth.heartbeat_interval_seconds`.
+- If a linker stops heartbeating (crash, network loss, shutdown), its KV entry expires and it drops from the pool.
+- Trade-off: native KV TTL means recently-expired linkers are not inspectable. Expiry events should be logged for observability.
 
-On graceful shutdown, the linker can send a deregistration request:
+On graceful shutdown, the linker sends a deregistration request:
 
 ```
-DELETE /v1/linkers/register
+DELETE /v1/linkers/:pubkey
 {
-  "pubkey": "<base64>",
   "timestamp": "...",
   "signature": "..."
 }
 ```
 
 This immediately removes it from the pool rather than waiting for TTL expiry.
+
+The `registration.rs` module hooks into the linker's shutdown signal handler (SIGTERM/SIGINT). On receiving the signal it sends the signed `DELETE` request with a short timeout (e.g., 3 seconds) so shutdown is not blocked. The deregistration is best-effort: if the request fails or times out, the linker proceeds with shutdown and the entry expires naturally via TTL.
+
+### Known Limitation: `max_uses` Under Eventual Consistency
+
+The first-heartbeat flow is a read-modify-write on `LinkerInvite.used_by`: read the invite, check `used_by.length < max_uses`, register the linker, write back the updated invite. Cloudflare KV does not provide atomic compare-and-swap, so two concurrent first-heartbeats with the same invite (different pubkeys) can both pass the check and both succeed, exceeding `max_uses`.
+
+In practice the risk is low: invite tokens are secrets distributed to specific operators, and the race window is narrow. For `max_uses: 1` invites, the worst outcome is two linkers registered instead of one -- both are still authenticated and authorized. The JSO can revoke the extra linker via `DELETE /v1/admin/linkers/:pubkey`.
 
 ## Agent Authorization
 
@@ -166,6 +201,8 @@ When a new HWC agent completes joining, the existing `notifyLinkers()` flow is u
 **After:** reads from the registered linkers pool, merging each linker's `admin_url` + `admin_secret` (from heartbeats) with `capabilities` (from the invite that authorized it)
 
 The joining service calls `POST /admin/agents` on each active linker, exactly as it does today.
+
+**Capabilities clarification:** `LinkerInvite.capabilities` define what a *linker* is authorized to provide (e.g., `dht_read`, `dht_write`, `k2`). These are inherited by the `RegisteredLinker` entry and determine which capabilities the joining service includes when calling `/admin/agents` on that linker. `ServiceConfig.linker_auth.capabilities` is a separate, global setting that defines the default capabilities granted to *agents* across all linkers. The invite capabilities scope which linkers participate in agent authorization; the service config capabilities scope what agents receive. If a linker's invite does not include a given capability, agent authorization calls to that linker will not include it.
 
 ## Data Model
 
@@ -191,13 +228,14 @@ interface RegisteredLinker {
   invite_token: string;               // which invite authorized this linker
   label?: string;                      // inherited from invite
   capabilities: LinkerCapability[];    // inherited from invite
-  admin_secret: string;               // from linker's heartbeat
+  admin_secret: string;               // set on first heartbeat, updated on rotation
   linker_url: string;                  // current WSS URL, updated each heartbeat
   admin_url: string;                   // current admin URL
-  last_heartbeat: string;             // ISO 8601
-  expires_at: string;                  // last_heartbeat + TTL
+  last_heartbeat: string;             // ISO 8601, also used for replay protection
 }
 ```
+
+Expiry is handled by Cloudflare KV's native `expirationTtl`, set on each heartbeat write. There is no `expires_at` field in the data model.
 
 ### Mapping to Existing Types
 
@@ -213,7 +251,7 @@ interface LinkerRegistration {
 // Conversion from RegisteredLinker
 function toLinkerRegistration(r: RegisteredLinker): LinkerRegistration {
   return {
-    linker_url: { url: r.linker_url, expires_at: r.expires_at },
+    linker_url: { url: r.linker_url },
     admin: { url: r.admin_url, secret: r.admin_secret },
   };
 }
@@ -232,6 +270,21 @@ This removes the `RegisteredLinker` entry from KV. The linker's subsequent heart
 
 Revoking an invite (`DELETE /v1/admin/linker-invites/:token`) prevents new linkers from using it but does **not** remove linkers already registered through that invite. To remove those, revoke each linker by pubkey.
 
+### Updating Linker Capabilities
+
+The JSO can update a registered linker's capabilities without requiring re-registration:
+
+```
+PATCH /v1/admin/linkers/:pubkey
+Authorization: Bearer <admin-secret>
+
+{
+  "capabilities": ["dht_read", "dht_write", "k2"]
+}
+```
+
+This updates the `capabilities` array on the `RegisteredLinker` entry in place. The linker continues heartbeating normally; the next agent authorization call will use the updated capabilities.
+
 ## API Summary
 
 ### Admin Endpoints (protected by joining service admin secret)
@@ -242,6 +295,8 @@ Revoking an invite (`DELETE /v1/admin/linker-invites/:token`) prevents new linke
 | `GET` | `/v1/admin/linker-invites` | List all invitations |
 | `DELETE` | `/v1/admin/linker-invites/:token` | Revoke an invitation |
 | `GET` | `/v1/admin/linkers` | List all registered linkers (with status) |
+| `GET` | `/v1/admin/linkers/:pubkey` | Get a specific linker's details |
+| `PATCH` | `/v1/admin/linkers/:pubkey` | Update a linker's capabilities |
 | `DELETE` | `/v1/admin/linkers/:pubkey` | Deauthorize a linker |
 
 ### Linker Endpoints (authenticated by signature)
@@ -249,7 +304,7 @@ Revoking an invite (`DELETE /v1/admin/linker-invites/:token`) prevents new linke
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/linkers/heartbeat` | Register or refresh a linker |
-| `DELETE` | `/v1/linkers/register` | Deregister on graceful shutdown |
+| `DELETE` | `/v1/linkers/:pubkey` | Deregister on graceful shutdown |
 
 ### Unchanged Client Endpoints
 
@@ -275,7 +330,7 @@ All new variables are optional. A linker with none of these set behaves exactly 
 ### New Module: `registration.rs`
 
 - Startup: load or generate keypair
-- Spawn background task: heartbeat loop (interval = `ttl_seconds / 2`)
+- Spawn background task: heartbeat loop (interval = `ttl_seconds / 3`, default ~200s)
 - On shutdown: best-effort deregistration
 - Share the persistent `SigningKey` with `linker_report.rs` (both use the same identity)
 
