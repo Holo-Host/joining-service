@@ -115,6 +115,11 @@ sign(UTF-8(JSON.stringify({admin_secret, admin_url, linker_url, pubkey, timestam
 sign(UTF-8(JSON.stringify({admin_url, linker_url, pubkey, timestamp})))
 ```
 
+**Deregistration (`DELETE /v1/linkers/:pubkey`):**
+```
+sign(UTF-8(JSON.stringify({pubkey, timestamp})))
+```
+
 This canonical form is unambiguous across Rust (`serde_json` with `sorted_keys`) and TypeScript (`JSON.stringify` with sorted keys). The `admin_secret` is always covered by the signature when transmitted, preventing credential substitution via replay.
 
 #### Replay Protection
