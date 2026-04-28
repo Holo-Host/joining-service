@@ -37,4 +37,12 @@ export interface LinkerAuthConfig {
    * Default: false (non-fatal — a linker outage does not break joining).
    */
   required?: boolean;
+  /** Bearer token for admin endpoints (linker invite/management). Enables dynamic registration when set. */
+  admin_secret?: string;
+  /** TTL for registered linker entries in seconds. Default: 600 (10 minutes). */
+  ttl_seconds?: number;
+  /** Heartbeat interval returned to linkers. Default: 200 (~TTL/3). */
+  heartbeat_interval_seconds?: number;
+  /** Max clock drift allowed for heartbeat timestamps in seconds. Default: 30. */
+  timestamp_tolerance_seconds?: number;
 }
