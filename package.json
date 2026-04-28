@@ -74,7 +74,8 @@
     "lit": "^3.3.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "wrangler": "^4.86.0"
   },
   "peerDependencies": {
     "@shoelace-style/shoelace": "^2.11.0",

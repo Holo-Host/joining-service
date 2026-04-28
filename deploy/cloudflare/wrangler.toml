@@ -1,12 +1,13 @@
 name = "joining-service"
 main = "worker-entry.ts"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 
 # KV namespace for session storage
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+id = "__SESSIONS_KV_NAMESPACE_ID__"
+preview_id = "__SESSIONS_KV_PREVIEW_NAMESPACE_ID__"
 
 # Routes: Worker handles /v1/* and /.well-known/* on your domain.
 # Static UI assets are served by Cloudflare Pages on the same domain.
@@ -25,15 +26,21 @@ preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
 # If deploying the Worker standalone (workers.dev or sole custom domain),
 # no routes section is needed -- all traffic goes to the Worker.
 #
-# To deploy:
-#   1. Create the KV namespace:
-#      npx wrangler kv:namespace create SESSIONS
-#      npx wrangler kv:namespace create SESSIONS --preview
-#   2. Replace the KV namespace IDs above
+# To deploy from a pre-built release artefact (recommended):
+#   1. Download worker.js and wrangler.toml from a tagged GitHub release
+#   2. Substitute KV namespace IDs:
+#      sed -i 's/__SESSIONS_KV_NAMESPACE_ID__/<id>/g' wrangler.toml
+#      sed -i 's/__SESSIONS_KV_PREVIEW_NAMESPACE_ID__/<preview-id>/g' wrangler.toml
 #   3. Set secrets:
 #      npx wrangler secret put CONFIG_JSON
 #      npx wrangler secret put SIGNING_KEY_HEX  (if membrane_proof.enabled)
-#   4. Deploy:
+#   4. Deploy the pre-built bundle:
+#      npx wrangler deploy --no-bundle worker.js -c wrangler.toml
+#
+# To deploy from source:
+#   1. Create the KV namespaces and fill in the IDs above
+#   2. Set secrets (see above)
+#   3. Deploy:
 #      npx wrangler deploy -c deploy/cloudflare/wrangler.toml
 
 [vars]
