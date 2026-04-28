@@ -120,14 +120,15 @@ describe('JoiningChallengeDialogSl', () => {
     expect(el.shadowRoot!.querySelector('sl-dialog')).toBeNull();
   });
 
-  it('renders sl-dialog when open with challenge', async () => {
+  it('renders inline challenge content when open with challenge', async () => {
     const el = document.createElement('joining-challenge-dialog-sl') as JoiningChallengeDialogSl;
     el.challenge = makeChallenge();
     el.open = true;
     document.body.appendChild(el);
     await el.updateComplete;
-    const dialog = el.shadowRoot!.querySelector('sl-dialog');
-    expect(dialog).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.heading')).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.description')).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('sl-input')).not.toBeNull();
   });
 
   it('renders spinner for polling types', async () => {
