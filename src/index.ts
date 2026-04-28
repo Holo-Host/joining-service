@@ -31,6 +31,11 @@ export { PostmarkTransport } from './email/postmark.js';
 export { LinkerAuthClient } from './linker-auth/index.js';
 export type { LinkerAdminInfo, LinkerRegistration, LinkerAuthConfig, LinkerCapability } from './linker-auth/index.js';
 
+// Dynamic linker registration
+export type { LinkerInvite, RegisteredLinker } from './linker-registration/index.js';
+export { LinkerRegistrationStore } from './linker-registration/index.js';
+export { toLinkerRegistration, generateInviteToken, canonicalJson, verifyHeartbeatSignature, validateTimestamp } from './linker-registration/index.js';
+
 // Membrane proof
 export type { MembraneProofGenerator } from './membrane-proof/generator.js';
 export { LairProofGenerator } from './membrane-proof/lair-signer.js';

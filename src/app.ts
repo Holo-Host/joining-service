@@ -23,6 +23,9 @@ import {
   type DelegatedVerificationPayload,
 } from './auth-methods/delegated-verification.js';
 import * as ed from '@noble/ed25519';
+import type { LinkerRegistrationStore } from './linker-registration/store.js';
+import { createAdminLinkerRoutes } from './routes/admin-linkers.js';
+import { createLinkerRoutes } from './routes/linker-heartbeat.js';
 
 export interface ServiceContext {
   config: ServiceConfig;
@@ -31,6 +34,7 @@ export interface ServiceContext {
   proofGenerator?: MembraneProofGenerator;
   urlProvider: UrlProvider;
   hcAuthClient?: HcAuthClient;
+  linkerRegistrationStore?: LinkerRegistrationStore;
 }
 
 async function notifyHcAuth(
@@ -756,6 +760,14 @@ export function createApp(ctx: ServiceContext): Hono {
       network_config: networkConfig,
     });
   });
+
+  // ---- Dynamic linker registration routes ----
+  if (ctx.config.linker_auth?.admin_secret && ctx.linkerRegistrationStore) {
+    const adminRoutes = createAdminLinkerRoutes(ctx.linkerRegistrationStore, ctx.config.linker_auth);
+    const linkerRoutes = createLinkerRoutes(ctx.linkerRegistrationStore, ctx.config.linker_auth);
+    app.route('', adminRoutes);
+    app.route('', linkerRoutes);
+  }
 
   // ---- POST /v1/reconnect ----
   app.post('/v1/reconnect', async (c) => {

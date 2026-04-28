@@ -1,12 +1,15 @@
 import type { HttpGateway } from '../types.js';
 import type { LinkerRegistration } from '../linker-auth/types.js';
 import type { UrlProvider } from './provider.js';
+import type { LinkerRegistrationStore } from '../linker-registration/store.js';
+import { toLinkerRegistration } from '../linker-registration/types.js';
 
 /** Cloudflare KV namespace binding (subset of the Workers runtime type). */
 export interface KVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options: { prefix: string }): Promise<{ keys: Array<{ name: string }> }>;
 }
 
 /**
@@ -19,16 +22,40 @@ export interface KVNamespace {
  *   `linker_registrations` — JSON-encoded LinkerRegistration[]
  *   `http_gateways`        — JSON-encoded HttpGateway[]
  *
- * Either key may be absent; the provider returns undefined in that case.
+ * When a LinkerRegistrationStore is provided, dynamically registered linkers
+ * are merged with static registrations. Static entries take precedence
+ * when the same linker_url appears in both sources.
  */
 export class KvUrlProvider implements UrlProvider {
-  constructor(private readonly kv: KVNamespace) {}
+  constructor(
+    private readonly kv: KVNamespace,
+    private readonly registrationStore?: LinkerRegistrationStore,
+  ) {}
 
   async getLinkerRegistrations(): Promise<LinkerRegistration[] | undefined> {
+    // Static registrations from KV
     const raw = await this.kv.get('linker_registrations');
-    if (!raw) return undefined;
-    const entries = JSON.parse(raw) as LinkerRegistration[];
-    return entries.length ? entries : undefined;
+    const staticEntries: LinkerRegistration[] = raw ? JSON.parse(raw) : [];
+
+    // Dynamic registrations from heartbeating linkers
+    let dynamicEntries: LinkerRegistration[] = [];
+    if (this.registrationStore) {
+      const linkers = await this.registrationStore.listLinkers();
+      dynamicEntries = linkers.map(toLinkerRegistration);
+    }
+
+    if (staticEntries.length === 0 && dynamicEntries.length === 0) {
+      return undefined;
+    }
+
+    // Merge: static wins on URL collision
+    const seen = new Set(staticEntries.map((r) => r.linker_url.url));
+    const merged = [
+      ...staticEntries,
+      ...dynamicEntries.filter((r) => !seen.has(r.linker_url.url)),
+    ];
+
+    return merged.length ? merged : undefined;
   }
 
   async getHttpGateways(): Promise<HttpGateway[] | undefined> {

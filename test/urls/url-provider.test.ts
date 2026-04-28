@@ -53,6 +53,12 @@ describe('KvUrlProvider', () => {
       async get(key: string) { return data[key] ?? null; },
       async put() {},
       async delete() {},
+      async list(options: { prefix: string }) {
+        const keys = Object.keys(data)
+          .filter((k) => k.startsWith(options.prefix))
+          .map((name) => ({ name }));
+        return { keys };
+      },
     };
   }
 
