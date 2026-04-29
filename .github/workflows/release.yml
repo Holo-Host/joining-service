@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+
+  build-worker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build Cloudflare Worker bundle
+        run: |
+          npx wrangler deploy --dry-run \
+            --config deploy/cloudflare/wrangler.toml \
+            --outfile dist/worker.js
+      - name: Upload release artefacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/worker.js
+            deploy/cloudflare/wrangler.toml
