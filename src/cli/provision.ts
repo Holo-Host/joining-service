@@ -10,7 +10,7 @@
  *   5. Output roles-settings YAML for hc install-app
  */
 
-import { JoiningClient, JoinSession } from '../client/joining.js';
+import { JoiningClient, JoinSession, JoiningError } from '../client/joining.js';
 import type { Challenge, JoinProvision } from '../types.js';
 import { lairSign, extractPubKey, type LairSignerOptions } from './lair.js';
 
@@ -59,10 +59,14 @@ export async function provision(opts: ProvisionOptions): Promise<JoinProvision> 
   log(opts, `Joining with agent key ${opts.agentKey.slice(0, 16)}...`);
 
   // Join
-  let session = await client.join(opts.agentKey, opts.claims);
-
-  if (session.status === 'rejected') {
-    throw new Error(`Join rejected: ${session.reason ?? 'no reason given'}`);
+  let session: JoinSession;
+  try {
+    session = await client.join(opts.agentKey, opts.claims);
+  } catch (err) {
+    if (err instanceof JoiningError && err.code === 'join_rejected') {
+      throw new Error(`Join rejected: ${err.message}`);
+    }
+    throw err;
   }
 
   // Handle pending challenges

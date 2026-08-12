@@ -316,6 +316,21 @@ describe('JoinSession', () => {
 
       expect(updated.status).toBe('ready');
     });
+
+    it('preserves rejection reason when polling returns rejected status', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          status: 'rejected',
+          reason: 'Agent blocked by administrator',
+        }),
+      );
+
+      const session = new JoinSession(TEST_BASE_URL, 'js_rejected', 'pending');
+      const updated = await session.pollStatus();
+
+      expect(updated.status).toBe('rejected');
+      expect(updated.reason).toBe('Agent blocked by administrator');
+    });
   });
 
   describe('getProvision', () => {
