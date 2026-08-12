@@ -397,14 +397,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
         // If no method in the OR group produced challenges, the group is unsatisfiable
         if (!groupHasChallenges) {
-          return c.json(
-            {
-              session: sessionId,
-              status: 'rejected' as const,
-              reason: 'No eligible auth method in group',
-            },
-            201,
-          );
+          return errorJson('join_rejected', 'No eligible auth method in group', 403);
         }
       } else {
         // AND: standalone method
@@ -419,14 +412,7 @@ export function createApp(ctx: ServiceContext): Hono {
           );
           if (challenges.length === 0 && entry !== 'open' && entry !== 'hc_auth_approval') {
             // Non-open/non-hc_auth_approval method produced no challenges -- agent is not eligible
-            return c.json(
-              {
-                session: sessionId,
-                status: 'rejected' as const,
-                reason: 'Agent is not eligible for this auth method',
-              },
-              201,
-            );
+            return errorJson('join_rejected', 'Agent is not eligible for this auth method', 403);
           }
           for (const ch of challenges) {
             allChallenges.push({
@@ -460,14 +446,7 @@ export function createApp(ctx: ServiceContext): Hono {
               claims,
             );
             if (!result.passed) {
-              return c.json(
-                {
-                  session: sessionId,
-                  status: 'rejected' as const,
-                  reason: result.reason ?? 'Invalid invite code',
-                },
-                201,
-              );
+              return errorJson('join_rejected', result.reason ?? 'Invalid invite code', 403);
             }
             cs.completed = true;
           }
