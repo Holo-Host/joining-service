@@ -446,6 +446,133 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 
 ---
 
+### 3.7 `POST /v1/admin/allowed-agents` — Register Allowed Agent
+
+Operator endpoint to register an agent key at runtime, enabling it to join via the `agent_allow_list` auth method. This complements the static `allowed_agents` config list — registered agents and config-listed agents are treated identically during join authorization.
+
+Re-registering an existing `agent_key` replaces the record, including clearing a previously set `label` if none is supplied.
+
+**Authentication**: Bearer token via `Authorization` header. The token value must match the server's `agent_registration.admin_secret` config. Requests without the header return 401 `unauthorized`; requests with a wrong token return 403 `forbidden`.
+
+**Request**:
+```json
+{
+  "agent_key": "uhCAk...",
+  "label": "acme-net progenitor"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (must be valid base64 and exactly 39 bytes) |
+| `label` | string | no | Human-readable label for this agent (e.g., hApp name, operator name) |
+
+**Response** (`201 Created`):
+```json
+{
+  "agent_key": "uhCAk...",
+  "label": "acme-net progenitor",
+  "registered_at": "2026-02-24T12:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent_key` | string | The registered agent key |
+| `label` | string | Label (if provided in request) |
+| `registered_at` | string (ISO 8601) | Timestamp when the agent was registered |
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Authorization header present but token does not match `agent_registration.admin_secret` |
+
+---
+
+### 3.8 `GET /v1/admin/allowed-agents` — List Allowed Agents
+
+Retrieve all currently registered agents. This does **not** include agents from the static `allowed_agents` config list; it shows only runtime-registered agents.
+
+**Authentication**: Bearer token (same as POST endpoint).
+
+**Response** (`200 OK`):
+```json
+{
+  "agents": [
+    {
+      "agent_key": "uhCAk...",
+      "label": "acme-net progenitor",
+      "registered_at": "2026-02-24T12:00:00Z"
+    },
+    {
+      "agent_key": "uhCAk...",
+      "label": "beta-net test agent",
+      "registered_at": "2026-02-24T13:15:00Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agents` | array | List of registered agent objects |
+| `agents[].agent_key` | string | Agent key |
+| `agents[].label` | string | Label (if provided at registration) |
+| `agents[].registered_at` | string (ISO 8601) | Registration timestamp |
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Invalid token |
+
+---
+
+### 3.9 `DELETE /v1/admin/allowed-agents/:agent_key` — Unregister Allowed Agent
+
+Remove an agent from the runtime-registered list. The agent will no longer be allowed to join via `agent_allow_list` auth (unless it is also in the static `allowed_agents` config).
+
+Unregistering prevents future joins; it does not terminate in-flight join sessions or revoke agents that have already joined (see `hc_auth_approval` for revocation).
+
+**Authentication**: Bearer token (same as POST endpoint).
+
+**URL Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_key` | string | Base64-encoded agent key (URL-encoded) |
+
+**Response** (`204 No Content`): No body.
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Invalid token |
+| 404 | `not_found` | Agent key not found in runtime-registered list |
+
+---
+
+### 3.10 Admin Endpoints — Configuration and Behavior
+
+The admin routes (`POST /v1/admin/allowed-agents`, `GET /v1/admin/allowed-agents`, `DELETE /v1/admin/allowed-agents/:agent_key`) are only enabled when `agent_registration.admin_secret` is configured in the server config. If this field is absent, the endpoints return 404.
+
+**Registered vs. Static Agents**: When the `agent_allow_list` auth method is active, an agent is allowed if it appears in **either** the runtime-registered agents list **or** the static `allowed_agents` config array. Both sources are checked; they do not replace each other. This allows static configuration for bootstrap agents and runtime registration for pipeline-generated agents.
+
+**Dependency on `auth_methods`**: Registering agents only affects joins when `agent_allow_list` is present in `auth_methods`. If `agent_registration.admin_secret` is configured without `agent_allow_list` in `auth_methods`, the admin routes are still mounted and registrations still succeed, but they have no effect on who can join — the server logs a startup warning in this case.
+
+**Store Backend**: Registered agents are persisted using the same backend as the session store (`session.store` config):
+- `memory` — agents are lost on server restart (ephemeral; suitable for development)
+- `sqlite` — agents are persisted to disk in `allowed-agents.db` (same directory as `sessions.db`). Note: this file is created whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — it backs the static `allowed_agents` list's lookups too.
+- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box.
+
+---
+
 ## 4. Error Response Format
 
 All errors follow a consistent JSON structure:

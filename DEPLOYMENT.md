@@ -349,8 +349,33 @@ The config file is JSON. Top-level keys `linker_registrations` and `http_gateway
 | `hc_auth.url` | string | — | Base URL of hc-auth-server (e.g. `https://auth.example.com`). Also used as `auth_server_url` in provision response `network_config`. |
 | `hc_auth.api_token` | string | — | Bearer token from the server's `API_TOKENS` env var |
 | `hc_auth.required` | boolean | false | Block provisioning/reconnect if hc-auth is unreachable |
+| `agent_registration.admin_secret` | string | — | Bearer token for the allowed-agent admin routes. If absent, admin routes return 404. When present, enables `POST/GET/DELETE /v1/admin/allowed-agents` for runtime registration of agents. |
 | `linker_auth` | LinkerAuthConfig | — | Linker authentication configuration |
 | `delegated_verification` | DelegatedVerificationConfig | — | Configuration for delegated verification auth method |
+
+### Registering allowed agents at runtime
+
+When `agent_registration.admin_secret` is configured, operator pipelines can register progenitor agents without restarting the server. This matters when a network is spun up by a deployment pipeline: the progenitor's agent key is generated during provisioning, so it cannot be baked into the service config ahead of time.
+
+```bash
+curl -X POST https://join.example.com/v1/admin/allowed-agents \
+  -H "Authorization: Bearer $JOINING_ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_key": "uhCAk...", "label": "acme-net progenitor"}'
+```
+
+Response:
+```json
+{
+  "agent_key": "uhCAk...",
+  "label": "acme-net progenitor",
+  "registered_at": "2026-02-24T12:00:00Z"
+}
+```
+
+Registered agents are persisted using the same backend as `session.store`: `memory` agents are ephemeral and lost on restart; `sqlite` agents are written to `allowed-agents.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext; the bundled worker entry does not wire this yet.
+
+Registrations only affect who can join when `agent_allow_list` is present in `auth_methods` — if `agent_registration.admin_secret` is set without it, the server logs a startup warning that registrations will have no effect on joins. Note also that `allowed-agents.db` is created on `sqlite` deployments whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — the static `allowed_agents` list uses the same store.
 
 ---
 
