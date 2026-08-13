@@ -60,6 +60,11 @@ export interface ServiceConfig {
   hc_auth?: HcAuthConfig;
   linker_auth?: LinkerAuthConfig;
   delegated_verification?: DelegatedVerificationConfig;
+  /** Runtime registration of allowed agents (e.g. network progenitors). */
+  agent_registration?: {
+    /** Bearer secret for the /v1/admin/allowed-agents routes. */
+    admin_secret: string;
+  };
 }
 
 const DEFAULTS = {

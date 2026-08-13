@@ -36,6 +36,10 @@ export type { LinkerInvite, RegisteredLinker } from './linker-registration/index
 export { LinkerRegistrationStore } from './linker-registration/index.js';
 export { toLinkerRegistration, generateInviteToken, canonicalJson, verifyHeartbeatSignature, validateTimestamp } from './linker-registration/index.js';
 
+// Dynamic agent registration
+export type { AllowedAgentStore, RegisteredAgent } from './agent-registration/index.js';
+export { MemoryAllowedAgentStore, SqliteAllowedAgentStore, KvAllowedAgentStore } from './agent-registration/index.js';
+
 // Membrane proof
 export type { MembraneProofGenerator } from './membrane-proof/generator.js';
 export { LairProofGenerator } from './membrane-proof/lair-signer.js';
