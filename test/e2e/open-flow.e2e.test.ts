@@ -13,7 +13,7 @@ describe('E2E: Open auth flow', () => {
     server = await startE2EServer({
       auth_methods: ['open'],
       membrane_proof: { enabled: true },
-      dna_hashes: [testDnaHash],
+      roles: { app_role: { dna_hash: testDnaHash } },
     });
     client = JoiningClient.fromUrl(`${server.baseUrl}/v1`);
   });
@@ -44,8 +44,7 @@ describe('E2E: Open auth flow', () => {
 
     const provision = await session.getProvision();
     expect(provision.linker_urls).toEqual([{ url: 'wss://linker.example.com:8090' }]);
-    expect(provision.membrane_proofs).toBeDefined();
-    expect(provision.membrane_proofs![testDnaHash]).toBeTruthy();
+    expect(provision.roles?.app_role.membrane_proof).toBeTruthy();
   });
 
   it('rejects duplicate agent key with 409', async () => {
