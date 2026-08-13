@@ -253,7 +253,11 @@ With membrane proofs (dev — ephemeral key, NOT safe for production):
   },
   "auth_methods": ["open"],
   "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
-  "dna_hashes": ["uhC0k..."],
+  "roles": {
+    "main": {
+      "dna_hash": "uhC0k..."
+    }
+  },
   "membrane_proof": {
     "enabled": true
   }
@@ -272,9 +276,13 @@ With membrane proofs (production — stable key):
   },
   "auth_methods": ["open"],
   "linker_registrations": [{"linker_url": {"url": "wss://linker.example.com:8090"}}],
-  "dna_hashes": ["uhC0k..."],
-  "dna_modifiers": {
-    "network_seed": "my-happ-mainnet-2026"
+  "roles": {
+    "main": {
+      "dna_hash": "uhC0k...",
+      "modifiers": {
+        "network_seed": "my-happ-mainnet-2026"
+      }
+    }
   },
   "membrane_proof": {
     "enabled": true,
@@ -313,6 +321,8 @@ curl http://localhost:3000/v1/info
 
 The config file is JSON. Top-level keys `linker_registrations` and `http_gateways` are extracted before the rest is passed to `resolveConfig()`. All other fields map to the `ServiceConfig` interface in `src/config.ts`.
 
+The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config containing either one is rejected at startup with an error pointing to `roles`.
+
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `happ.id` | string | required | Machine-readable identifier |
@@ -325,8 +335,7 @@ The config file is JSON. Top-level keys `linker_registrations` and `http_gateway
 | `http_gateways` | HttpGateway[] | — | Top-level config key (not in ServiceConfig). Read-only gateway instances |
 | `linker_info.selection_mode` | `"assigned"` \| `"client_choice"` | — | How linker URLs are assigned to agents |
 | `linker_info.region_hints` | string[] | — | Region hints for linker selection |
-| `dna_hashes` | string[] \| Record\<string, string\> | — | Required when `membrane_proof.enabled` is true. Flat list or `{role_name: dna_hash}` map |
-| `dna_modifiers.network_seed` | string | — | DNA network seed |
+| `roles` | Record\<role_name, {dna_hash, modifiers?}\> | — | Required when `membrane_proof.enabled` is true. Role-centric configuration: `{role_name: {dna_hash: "...", modifiers?: {...}}}` |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
 | `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` auth |
@@ -649,9 +658,13 @@ Example `/etc/joining-service/config.json`:
       "status": "available"
     }
   ],
-  "dna_hashes": ["uhC0k..."],
-  "dna_modifiers": {
-    "network_seed": "my-happ-mainnet-2026"
+  "roles": {
+    "main": {
+      "dna_hash": "uhC0k...",
+      "modifiers": {
+        "network_seed": "my-happ-mainnet-2026"
+      }
+    }
   },
   "membrane_proof": {
     "enabled": true,

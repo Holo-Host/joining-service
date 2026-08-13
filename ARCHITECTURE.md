@@ -225,7 +225,7 @@ sequenceDiagram
     JS-->>Agent: status: "ready"
 
     Agent->>JS: GET /v1/join/:session/provision
-    JS-->>Agent: linker_urls, membrane_proofs, happ_bundle_url, dna_modifiers
+    JS-->>Agent: linker_urls, roles, happ_bundle_url
 
     Note over Agent: Install hApp with proofs,<br/>connect to linker
 ```
