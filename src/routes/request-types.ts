@@ -42,3 +42,11 @@ export const DeregisterBody = v.object({
   signature: v.string(),
 });
 export type DeregisterBody = v.InferOutput<typeof DeregisterBody>;
+
+// ---- Admin: POST /v1/admin/allowed-agents ----
+
+export const RegisterAgentBody = v.object({
+  agent_key: v.string(),
+  label: v.optional(v.string()),
+});
+export type RegisterAgentBody = v.InferOutput<typeof RegisterAgentBody>;

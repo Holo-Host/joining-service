@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import type { LinkerAuthConfig } from '../linker-auth/types.js';
 import type { LinkerRegistrationStore } from '../linker-registration/store.js';
 import { generateInviteToken } from '../linker-registration/types.js';
@@ -17,8 +18,12 @@ export function createAdminLinkerRoutes(
 ): Hono {
   const app = new Hono();
 
-  // Bearer token auth middleware (timing-safe comparison)
-  app.use('/v1/admin/*', async (c, next) => {
+  // Bearer token auth middleware (timing-safe comparison). Scoped to the
+  // linker-invites/linkers path families only -- Hono flattens routes+middleware
+  // from `app.route('', subApp)`, so a broader `/v1/admin/*` match here would
+  // also gate the agent admin sub-app's routes (and vice versa) when both are
+  // mounted with different secrets.
+  const requireAdminSecret: MiddlewareHandler = async (c, next) => {
     const auth = c.req.header('Authorization');
     if (!auth) {
       return errorJson('unauthorized', 'Authorization header required', 401);
@@ -28,7 +33,11 @@ export function createAdminLinkerRoutes(
       return errorJson('forbidden', 'Invalid admin secret', 403);
     }
     await next();
-  });
+  };
+  app.use('/v1/admin/linker-invites', requireAdminSecret);
+  app.use('/v1/admin/linker-invites/*', requireAdminSecret);
+  app.use('/v1/admin/linkers', requireAdminSecret);
+  app.use('/v1/admin/linkers/*', requireAdminSecret);
 
   // ---- POST /v1/admin/linker-invites ----
   app.post('/v1/admin/linker-invites', async (c) => {
