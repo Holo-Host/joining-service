@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as ed from '@noble/ed25519';
-import { createTestApp } from './helpers.js';
+import { createTestApp, fakeAgentKey } from './helpers.js';
 import { encodeHashToBase64, agentPubKeyFrom32 } from '../src/utils.js';
+import { AgentAllowListAuthMethod } from '../src/auth-methods/agent-allow-list.js';
+import { MemoryAllowedAgentStore } from '../src/agent-registration/index.js';
 
 // Generate a real ed25519 keypair encoded as a valid 39-byte AgentPubKey
 async function generateAgentKeypair(): Promise<{
@@ -143,5 +145,28 @@ describe('Agent allow list flow', () => {
     expect(provRes.status).toBe(200);
     const creds = await provRes.json();
     expect(creds.linker_urls).toEqual([{ url: 'wss://linker.example.com:8090' }]);
+  });
+});
+
+describe('Agent allow list plugin with store', () => {
+  it('agent registered in the store gets a challenge without being in config', async () => {
+    const store = new MemoryAllowedAgentStore();
+    const key = fakeAgentKey(30);
+    await store.put({ agent_key: key, registered_at: '2026-08-13T00:00:00.000Z' });
+    const method = new AgentAllowListAuthMethod([], store);
+    const challenges = await method.createChallenges(key, {});
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0].type).toBe('agent_allow_list');
+  });
+
+  it('agent in neither config nor store gets no challenge', async () => {
+    const method = new AgentAllowListAuthMethod([], new MemoryAllowedAgentStore());
+    expect(await method.createChallenges(fakeAgentKey(31), {})).toHaveLength(0);
+  });
+
+  it('static config list keeps working alongside a store', async () => {
+    const key = fakeAgentKey(32);
+    const method = new AgentAllowListAuthMethod([key], new MemoryAllowedAgentStore());
+    expect(await method.createChallenges(key, {})).toHaveLength(1);
   });
 });
