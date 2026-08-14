@@ -195,13 +195,14 @@ describe('JoiningFlow', () => {
         auth_methods: ['open'],
       }),
     );
-    // join -> rejected
+    // join -> rejected (403 with error details)
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
-        session: 'sess_4',
-        status: 'rejected',
-        reason: 'Not allowed',
-      }, 201),
+        error: {
+          code: 'join_rejected',
+          message: 'Not allowed',
+        },
+      }, 403),
     );
 
     const el = createFlow();
@@ -216,6 +217,7 @@ describe('JoiningFlow', () => {
     const detail = await errored;
 
     expect(detail.error.message).toBe('Not allowed');
+    expect((el as any).flowStatus).toBe('rejected');
   });
 
   it('emits join-error on network failure', async () => {
@@ -233,5 +235,6 @@ describe('JoiningFlow', () => {
     const detail = await errored;
 
     expect(detail.error.message).toBe('Network error');
+    expect((el as any).flowStatus).toBe('error');
   });
 });

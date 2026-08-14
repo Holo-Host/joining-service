@@ -200,19 +200,20 @@ The client sends its agent key and optional identity claims. The server determin
 }
 ```
 
-**Response** (`201 Created`) — rejected:
+**Response** (`403 Forbidden`) — rejected (see Errors below):
 ```json
 {
-  "session": "js_r1r2r3",
-  "status": "rejected",
-  "reason": "This hApp requires an invite code"
+  "error": {
+    "code": "join_rejected",
+    "message": "This hApp requires an invite code"
+  }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `session` | string | yes | Opaque session token (prefixed `js_`) |
-| `status` | string | yes | `"ready"`, `"pending"`, or `"rejected"` |
+| `status` | string | yes | `"ready"` or `"pending"` |
 | `challenges` | array | if pending | Verification challenges to complete |
 | `challenges[].id` | string | yes | Challenge identifier (used in verify endpoint) |
 | `challenges[].type` | string | yes | Challenge type (matches `auth_methods` values) |
@@ -220,7 +221,6 @@ The client sends its agent key and optional identity claims. The server determin
 | `challenges[].expires_at` | string (ISO 8601) | no | When this challenge expires |
 | `challenges[].metadata` | object | no | Type-specific data (e.g., EVM signing payload, nonce for agent_allow_list) |
 | `challenges[].group` | string | no | OR group identifier. Challenges sharing the same group are alternatives -- completing any one satisfies the group. |
-| `reason` | string | if rejected | Human-readable rejection reason |
 | `poll_interval_ms` | number | if pending | Suggested polling interval in milliseconds |
 
 **Errors**:
@@ -229,6 +229,7 @@ The client sends its agent key and optional identity claims. The server determin
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
+| 403 | `join_rejected` | Join was rejected (agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
 | 409 | `agent_already_joined` | This agent key has already completed joining. Use `POST /v1/reconnect` instead. |
 | 429 | `rate_limited` | Too many join attempts |
 
@@ -322,7 +323,14 @@ Poll for the current status of a join session. Used when external processes (e.g
 }
 ```
 
-Same response shape as the join response.
+The `/status` endpoint returns the current session state, including status and optional challenges, rejection reason, or polling guidance.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `status` | string | yes | `"ready"`, `"pending"`, or `"rejected"` |
+| `challenges` | array | if pending | Remaining challenges with per-challenge `completed` flag (same shape as `/join` response) |
+| `reason` | string | if rejected | Human-readable rejection reason (e.g. `"agent blocked by administrator"`) |
+| `poll_interval_ms` | number | if pending | Suggested polling interval in milliseconds |
 
 **Errors**:
 
@@ -985,9 +993,8 @@ interface JoinRequest {
 
 interface JoinResponse {
   session: string;
-  status: 'ready' | 'pending' | 'rejected';
+  status: 'ready' | 'pending';
   challenges?: Challenge[];
-  reason?: string;
   poll_interval_ms?: number;
 }
 
@@ -1012,6 +1019,15 @@ interface VerifyRequest {
 interface VerifyResponse {
   status: 'ready' | 'pending' | 'rejected';
   challenges_remaining?: Challenge[];
+  reason?: string;
+  poll_interval_ms?: number;
+}
+
+// --- /v1/join/{session}/status ---
+
+interface StatusResponse {
+  status: 'ready' | 'pending' | 'rejected';
+  challenges?: Challenge[];
   reason?: string;
   poll_interval_ms?: number;
 }

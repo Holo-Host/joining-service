@@ -42,10 +42,42 @@ describe('OR groups (any_of)', () => {
   });
 
   it('challenges in OR group share a group id', async () => {
+    const { agentKey } = await generateAgentKeypair();
+
+    const { request } = await createTestApp({
+      auth_methods: [{ any_of: ['agent_allow_list', 'email_code'] }],
+      allowed_agents: [agentKey],
+      email: { provider: 'file', output_dir: '/tmp/test-or-emails' },
+    });
+
+    const joinRes = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent_key: agentKey,
+        claims: { email: 'test@example.com' },
+      }),
+    });
+    expect(joinRes.status).toBe(201);
+    const joinBody = await joinRes.json();
+
+    // Both agent_allow_list and email_code produce challenges and neither auto-completes
+    // so status should be pending
+    expect(joinBody.status).toBe('pending');
+    expect(joinBody.challenges).toHaveLength(2);
+
+    // Verify both challenges have the same group id
+    const groups = joinBody.challenges.map((c: { group?: string }) => c.group);
+    expect(groups[0]).toBeDefined();
+    expect(groups[1]).toBeDefined();
+    expect(groups[0]).toBe(groups[1]);
+  });
+
+  it('invalid invite code in OR group returns rejected', async () => {
     const { request } = await createTestApp({
       auth_methods: [{ any_of: ['email_code', 'invite_code'] }],
       email: { provider: 'file', output_dir: '/tmp/test-or-emails' },
-      invite_codes: ['BAD-CODE'], // we will send a different code to keep it pending
+      invite_codes: ['VALID-CODE'],
     });
 
     const agentKey = fakeAgentKey();
@@ -54,23 +86,16 @@ describe('OR groups (any_of)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         agent_key: agentKey,
-        claims: { email: 'test@example.com', invite_code: 'WRONG' },
+        claims: { email: 'test@example.com', invite_code: 'WRONG-CODE' },
       }),
     });
-    expect(joinRes.status).toBe(201);
-    const joinBody = await joinRes.json();
 
-    // invite_code with wrong code in OR group: the invite is rejected but
-    // email_code is still pending, so overall status should be pending
-    // (invite auto-verify failure in OR group doesn't reject the whole session)
-    if (joinBody.status === 'pending') {
-      // The email challenge should have a group field
-      const emailChallenge = joinBody.challenges.find(
-        (c: { type: string }) => c.type === 'email_code',
-      );
-      expect(emailChallenge).toBeDefined();
-      expect(emailChallenge.group).toBeDefined();
-    }
+    // Invite codes are auto-verified at join time, so presenting a wrong code
+    // is a definitive failure: the join is rejected outright rather than left
+    // pending on the group's other alternatives.
+    expect(joinRes.status).toBe(403);
+    const body = await joinRes.json();
+    expect(body.error.code).toBe('join_rejected');
   });
 
   it('AND + OR combo: standalone AND must also be completed', async () => {
@@ -137,10 +162,10 @@ describe('OR groups (any_of)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_key: agentKey }),
     });
-    expect(joinRes.status).toBe(201);
+    expect(joinRes.status).toBe(403);
     const body = await joinRes.json();
-    expect(body.status).toBe('rejected');
-    expect(body.reason).toContain('No eligible auth method');
+    expect(body.error.code).toBe('join_rejected');
+    expect(body.error.message).toBe('No eligible auth method in group');
   });
 
   it('non-allow-listed agent can still join via OR alternative', async () => {
