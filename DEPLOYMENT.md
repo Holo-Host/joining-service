@@ -183,6 +183,18 @@ properties:
   progenitor: uhCAkXXXX...  # AgentPubKey from gen-signing-key output
 ```
 
+### Obtaining the DNA hash
+
+`roles.<name>.dna_hash` must be the **post-modifiers** DNA hash — network_seed and properties (including the progenitor above) are hashed into the DNA, so any of them changes the hash. Install the hApp with your actual modifiers on a conductor and read the resulting hash back from that install; don't use the bundle's base hash or compute it by hand.
+
+```sh
+hc s call list-apps
+# or, for a specific app:
+hc s call --running list-cells
+```
+
+The cell IDs returned are `[DnaHash, AgentPubKey]` pairs — take the `DnaHash` for the role's cell and put its base64 form (`uhC0k...`) into `roles.<name>.dna_hash`. A mismatched hash doesn't fail loudly: the joining service still issues membrane proofs, but the DNA's `genesis_self_check` rejects them (or peers reject a mismatched network) because the proof is bound to the wrong network.
+
 ### Cross-language signature verification
 
 The joining service (TypeScript) signs with `@msgpack/msgpack` encode and `@holo-host/lair` for ed25519. The DNA (Rust) verifies with `hdi::prelude::verify_signature`, which re-serializes the `MembraneProofData` struct using `rmp_serde::to_vec_named` before checking the signature.
@@ -335,7 +347,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `http_gateways` | HttpGateway[] | — | Top-level config key (not in ServiceConfig). Read-only gateway instances |
 | `linker_info.selection_mode` | `"assigned"` \| `"client_choice"` | — | How linker URLs are assigned to agents |
 | `linker_info.region_hints` | string[] | — | Region hints for linker selection |
-| `roles` | Record\<role_name, {dna_hash, modifiers?}\> | — | Required when `membrane_proof.enabled` is true. Role-centric configuration: `{role_name: {dna_hash: "...", modifiers?: {...}}}` |
+| `roles` | Record\<role_name, {dna_hash?, modifiers?}\> | — | Role-centric configuration: `{role_name: {dna_hash?: "...", modifiers?: {...}}}`. `dna_hash` is required per-role only when `membrane_proof.enabled` is true (it binds the membrane proof to a network); when present it is always validated. See [Obtaining the DNA hash](#obtaining-the-dna-hash). |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
 | `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` auth |
