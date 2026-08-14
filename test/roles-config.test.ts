@@ -32,6 +32,44 @@ describe('roles config', () => {
     ).toThrow(/dna_hash/);
   });
 
+  it('accepts a role without dna_hash when membrane_proof is absent', () => {
+    const cfg = resolveConfig({
+      ...BASE,
+      roles: { main: { modifiers: { network_seed: 'seed-a' } } },
+    });
+    expect(cfg.roles!.main.dna_hash).toBeUndefined();
+    expect(cfg.roles!.main.modifiers?.network_seed).toBe('seed-a');
+  });
+
+  it('accepts a role without dna_hash when membrane_proof is disabled', () => {
+    const cfg = resolveConfig({
+      ...BASE,
+      roles: { main: {} },
+      membrane_proof: { enabled: false },
+    });
+    expect(cfg.roles!.main.dna_hash).toBeUndefined();
+  });
+
+  it('rejects a role missing dna_hash when membrane_proof.enabled is true', () => {
+    expect(() =>
+      resolveConfig({
+        ...BASE,
+        roles: { main: { dna_hash: fakeDnaHash(1) }, chat: {} },
+        membrane_proof: { enabled: true },
+      }),
+    ).toThrow(/roles\.chat\.dna_hash is required when membrane_proof\.enabled is true/);
+  });
+
+  it('rejects an invalid dna_hash even when membrane_proof is disabled', () => {
+    expect(() =>
+      resolveConfig({
+        ...BASE,
+        roles: { main: { dna_hash: 'not-a-hash' } },
+        membrane_proof: { enabled: false },
+      }),
+    ).toThrow(/dna_hash/);
+  });
+
   it('rejects an agent-pubkey-prefixed hash in roles.dna_hash', () => {
     // fakeAgentKey produces a 39-byte AgentPubKey (0x84 0x20 0x24) — wrong prefix for a DnaHash (0x84 0x2d 0x24)
     expect(() =>

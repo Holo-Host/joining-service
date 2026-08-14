@@ -42,6 +42,21 @@ describe('per-role provision and info', () => {
     expect(prov.roles.main.dna_modifiers).toEqual({ network_seed: 's' });
   });
 
+  it('provision omits membrane_proof but keeps dna_modifiers for a hash-less role when proofs are disabled', async () => {
+    const { request } = await createTestApp({
+      roles: { main: { modifiers: { network_seed: 's' } } },
+    });
+    const joinRes = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: fakeAgentKey() }),
+    });
+    const { session } = await joinRes.json();
+    const prov = await (await request(`/v1/join/${session}/provision`)).json();
+    expect(prov.roles.main.membrane_proof).toBeUndefined();
+    expect(prov.roles.main.dna_modifiers).toEqual({ network_seed: 's' });
+  });
+
   it('info exposes per-role modifiers but never dna hashes or proofs', async () => {
     const { request } = await createTestApp({
       roles: { main: { dna_hash: fakeDnaHash(4), modifiers: { network_seed: 'pub' } } },

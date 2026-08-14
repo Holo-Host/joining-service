@@ -7,8 +7,13 @@ import { decodeHashFromBase64 } from './utils.js';
 
 /** Per-role DNA configuration, mirroring Holochain's app model. */
 export interface RoleConfig {
-  /** Base64 DnaHash ("uhC0k..."), strictly validated. */
-  dna_hash: string;
+  /**
+   * Base64 DnaHash ("uhC0k..."), strictly validated when present. Required
+   * when `membrane_proof.enabled` — a membrane proof is bound to a network
+   * via this hash. Must be the post-modifiers DNA hash as reported by the
+   * conductor that installed the DNA (see DEPLOYMENT.md).
+   */
+  dna_hash?: string;
   /** Per-DNA modifiers for this role. */
   modifiers?: DnaModifiers;
 }
@@ -27,7 +32,8 @@ export interface ServiceConfig {
     region_hints?: string[];
   };
   /**
-   * Per-role DNA configuration: role name → { dna_hash, modifiers }.
+   * Per-role DNA configuration: role name → { dna_hash?, modifiers? }.
+   * dna_hash is required only when membrane_proof.enabled is true.
    */
   roles?: Record<string, RoleConfig>;
   membrane_proof?: {
@@ -111,9 +117,14 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
   const roles: Record<string, RoleConfig> | undefined = hasRoles ? partial.roles : undefined;
   if (roles) {
     for (const [name, rc] of Object.entries(roles)) {
-      if (!isValidDnaHash(rc.dna_hash)) {
+      if (rc.dna_hash !== undefined && !isValidDnaHash(rc.dna_hash)) {
         throw new Error(
           `config: roles.${name}.dna_hash is not a valid DnaHash (expected base64 "uhC0k..." decoding to 39 bytes)`,
+        );
+      }
+      if (partial.membrane_proof?.enabled && !rc.dna_hash) {
+        throw new Error(
+          `config: roles.${name}.dna_hash is required when membrane_proof.enabled is true`,
         );
       }
     }

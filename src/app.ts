@@ -734,12 +734,18 @@ export function createApp(ctx: ServiceContext): Hono {
     if (rolesCfg && Object.keys(rolesCfg).length > 0) {
       let proofsByHash: Record<string, Uint8Array> = {};
       if (ctx.proofGenerator) {
-        const hashes = [...new Set(Object.values(rolesCfg).map((r) => r.dna_hash))];
+        const hashes = [
+          ...new Set(
+            Object.values(rolesCfg)
+              .map((r) => r.dna_hash)
+              .filter((hash): hash is string => hash !== undefined),
+          ),
+        ];
         proofsByHash = await ctx.proofGenerator.generate(session.agent_key, hashes);
       }
       rolesOut = {};
       for (const [role, rc] of Object.entries(rolesCfg)) {
-        const proof = proofsByHash[rc.dna_hash];
+        const proof = rc.dna_hash ? proofsByHash[rc.dna_hash] : undefined;
         rolesOut[role] = {
           membrane_proof: proof ? toBase64(proof) : undefined,
           dna_modifiers: rc.modifiers,
