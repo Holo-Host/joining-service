@@ -16,13 +16,15 @@ export interface AdminNetworkRoutesOptions {
   adminSecret: string;
   requireDnaHash: boolean;
   staticHappId: string;
+  /** dna_hashes used by the service's own statically configured roles. */
+  staticDnaHashes: string[];
 }
 
 export function createAdminNetworkRoutes(
   store: NetworkStore,
   options: AdminNetworkRoutesOptions,
 ): Hono {
-  const { adminSecret, requireDnaHash, staticHappId } = options;
+  const { adminSecret, requireDnaHash, staticHappId, staticDnaHashes } = options;
   const app = new Hono();
 
   // Bearer token auth middleware (timing-safe comparison). Scoped to the
@@ -87,6 +89,43 @@ export function createAdminNetworkRoutes(
           `roles.${role}.dna_hash is required when membrane proofs are enabled`,
           400,
         );
+      }
+    }
+
+    // Network identity (happ_id) stands in for the DNA hash space, but
+    // nothing else enforces that a given DNA belongs to only one network:
+    // registering a second network over an already-used dna_hash would let
+    // one agent join both and receive membrane proofs for the same cell
+    // twice, a chain-fork risk. Duplicates *within* this registration's own
+    // roles are allowed -- same-DNA multi-role apps exist, and provision
+    // already dedupes hashes when generating proofs.
+    const candidateHashes = roleEntries
+      .map(([, rc]) => rc.dna_hash)
+      .filter((hash): hash is string => hash !== undefined);
+
+    if (candidateHashes.length > 0) {
+      const staticConflict = candidateHashes.find((hash) => staticDnaHashes.includes(hash));
+      if (staticConflict) {
+        return errorJson(
+          'duplicate_dna_hash',
+          `dna_hash ${staticConflict} is already used by the service's static configuration (happ_id "${staticHappId}")`,
+          409,
+        );
+      }
+
+      // Exclude the record being re-registered -- a same-happ_id upsert
+      // reusing its own hashes is not a conflict.
+      const otherNetworks = (await store.list()).filter((n) => n.happ_id !== happ_id);
+      for (const other of otherNetworks) {
+        for (const rc of Object.values(other.roles)) {
+          if (rc.dna_hash && candidateHashes.includes(rc.dna_hash)) {
+            return errorJson(
+              'duplicate_dna_hash',
+              `dna_hash ${rc.dna_hash} is already registered to network "${other.happ_id}"`,
+              409,
+            );
+          }
+        }
       }
     }
 

@@ -949,12 +949,16 @@ export function createApp(ctx: ServiceContext): Hono {
 
   // ---- Dynamic network registration routes ----
   if (ctx.config.network_registration?.admin_secret && ctx.networkStore) {
+    const staticDnaHashes = Object.values(ctx.config.roles ?? {})
+      .map((rc) => rc.dna_hash)
+      .filter((hash): hash is string => hash !== undefined);
     app.route(
       '',
       createAdminNetworkRoutes(ctx.networkStore, {
         adminSecret: ctx.config.network_registration.admin_secret,
         requireDnaHash: ctx.config.membrane_proof?.enabled === true,
         staticHappId: ctx.config.happ.id,
+        staticDnaHashes,
       }),
     );
   }

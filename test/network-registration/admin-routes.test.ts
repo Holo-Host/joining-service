@@ -6,12 +6,13 @@ import { fakeAgentKey, fakeDnaHash } from '../helpers.js';
 const SECRET = 'test-network-admin-secret';
 const STATIC_HAPP_ID = 'static-app';
 
-function setup(requireDnaHash = false, staticHappId = STATIC_HAPP_ID) {
+function setup(requireDnaHash = false, staticHappId = STATIC_HAPP_ID, staticDnaHashes: string[] = []) {
   const store = new MemoryNetworkStore();
   const app = createAdminNetworkRoutes(store, {
     adminSecret: SECRET,
     requireDnaHash,
     staticHappId,
+    staticDnaHashes,
   });
   const request = (path: string, init?: RequestInit) =>
     app.request(path, init);
@@ -241,5 +242,88 @@ describe('admin networks routes', () => {
 
     const again = await authed('/v1/admin/networks/acme-net', { method: 'DELETE' });
     expect(again.status).toBe(404);
+  });
+
+  describe('dna_hash uniqueness across networks', () => {
+    it('rejects a dna_hash already registered to another network, naming both', async () => {
+      const { authed } = setup();
+      await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(validBody({ happ_id: 'network-a' })),
+      });
+
+      const res = await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(
+          validBody({
+            happ_id: 'network-b',
+            roles: { main: { dna_hash: fakeDnaHash(1) } },
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error.code).toBe('duplicate_dna_hash');
+      expect(body.error.message).toContain(fakeDnaHash(1));
+      expect(body.error.message).toContain('network-a');
+    });
+
+    it('rejects a dna_hash already used by the static config, naming it', async () => {
+      const { authed } = setup(false, STATIC_HAPP_ID, [fakeDnaHash(1)]);
+      const res = await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(
+          validBody({
+            happ_id: 'network-a',
+            roles: { main: { dna_hash: fakeDnaHash(1) } },
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error.code).toBe('duplicate_dna_hash');
+      expect(body.error.message).toContain(fakeDnaHash(1));
+      expect(body.error.message).toContain(STATIC_HAPP_ID);
+    });
+
+    it('allows re-registering the same happ_id with its own hashes unchanged', async () => {
+      const { authed } = setup();
+      await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(validBody({ happ_id: 'network-a' })),
+      });
+
+      const res = await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(validBody({ happ_id: 'network-a' })),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('allows two networks with entirely distinct dna_hashes', async () => {
+      const { authed } = setup();
+      await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(validBody({ happ_id: 'network-a' })),
+      });
+
+      const res = await authed('/v1/admin/networks', {
+        method: 'POST',
+        body: JSON.stringify(
+          validBody({
+            happ_id: 'network-b',
+            roles: {
+              main: { dna_hash: fakeDnaHash(3) },
+              chat: { dna_hash: fakeDnaHash(4) },
+            },
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+    });
   });
 });
