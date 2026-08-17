@@ -637,7 +637,7 @@ The admin routes (`POST /v1/admin/allowed-agents`, `GET /v1/admin/allowed-agents
 **Store Backend**: Registered agents are persisted using the same backend as the session store (`session.store` config):
 - `memory` — agents are lost on server restart (ephemeral; suitable for development)
 - `sqlite` — agents are persisted to disk in `allowed-agents.db` (same directory as `sessions.db`). Note: this file is created whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — it backs the static `allowed_agents` list's lookups too.
-- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box.
+- `cloudflare-kv` — works out of the box. The bundled worker entry constructs a `KvAllowedAgentStore` against the `SESSIONS` KV binding whenever `agent_allow_list` is in `auth_methods` or `agent_registration` is configured.
 
 ---
 
@@ -832,7 +832,7 @@ The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/netwo
 **Store Backend**: Registered networks are persisted using the same backend as the session store (`session.store` config):
 - `memory` — networks are lost on server restart (ephemeral; suitable for development)
 - `sqlite` — networks are persisted to disk in `networks.db` (same directory as `sessions.db`)
-- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvNetworkStore` and pass it as `networkStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box. Note: KV's eventual consistency means two concurrent registrations of the same `happ_id` may race; the last write wins. The cross-network `dna_hash` uniqueness check (Section 3.11) is best-effort on this backend for the same reason: it lists all networks via a non-paginated KV `list()` under eventual consistency, so a duplicate registered moments earlier, or one from a list page not yet visible, can slip through undetected.
+- `cloudflare-kv` — works out of the box. The bundled worker entry constructs a `KvNetworkStore` against the `SESSIONS` KV binding whenever `network_registration` is configured. Note: KV's eventual consistency means two concurrent registrations of the same `happ_id` may race; the last write wins. The cross-network `dna_hash` uniqueness check (Section 3.11) is best-effort on this backend for the same reason: it lists all networks via a non-paginated KV `list()` under eventual consistency, so a duplicate registered moments earlier, or one from a list page not yet visible, can slip through undetected.
 
 **One-Call Pipeline Registration**: A key use case is network provisioning pipelines: a network is registered with its progenitor agent in `allowed_agents`, and the progenitor immediately joins with `"network": "<happ_id>"`. The registration and join do not require config edits or service restart — they are independent API calls that, in sequence, form a complete onboarding path. Setting `allowed_agents` to the progenitor's key is what makes this safe to run against a service configured with `open` or `email_code` auth: without it, any agent naming the network would receive its membrane proofs, not just the progenitor the pipeline registered.
 
