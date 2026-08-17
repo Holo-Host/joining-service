@@ -23,13 +23,14 @@ joining-cli provision [options]
 | Option | Description |
 |--------|-------------|
 | `--service-url <url>` | Joining service base URL |
-| `--discover <domain>` | Auto-discover service via `.well-known/holo-joining` |
+| `--discover <domain>` | Auto-discover service via `.well-known/holo-joining`. The document's `happ_id` becomes the default `--network` when `--network` is not also given (harmless when it's the statically configured network's own happ_id -- the server treats that the same as no network). |
 | `--agent-key <key>` | AgentPubKey in HoloHash format (`uhCAk...`) |
 | `--lair-url <url>` | Lair IPC connection URL (required for `agent_allow_list` auth) |
 | `--lair-passphrase-file <path>` | File containing lair passphrase (or set `LAIR_PASSPHRASE` env) |
 | `--keyutil-bin <path>` | Path to `holo-keyutil` binary (default: searches PATH) |
 | `--invite-code <code>` | Invite code for gated networks (or set `INVITE_CODE` env) |
 | `--email <address>` | Email address for `email_code` auth |
+| `--network <id>` | happ_id of a registered network to join (see JOINING_SERVICE_API.md Section 3.11 for registration). Determines which network's `roles`/membrane proofs the session receives at provision. Omit to join the statically configured network's roles; naming that network's own happ_id has the same effect. |
 | `--output <path>` | Write output to file (default: stdout) |
 | `--format <yaml\|json>` | Output format (default: `yaml`) |
 | `--poll-timeout <seconds>` | Max wait for async challenges like admin approval (default: 300) |
@@ -57,7 +58,12 @@ other-role:
   membrane_proof: "base64-encoded-proof..."
 ```
 
-Role names in the output come from the joining service config. The service operator should configure `roles` with per-role DNA hashes and modifiers (see [Service Configuration](#service-configuration)).
+Role names in the output — along with their DNA hashes and modifiers — come from whichever network the session joined:
+
+- **With `--network <happ_id>`** (or a `--discover` document whose `happ_id` names a registered network): from that network's registration record. The service's own static `roles` are not consulted, and the bundle URL is the network's own `happ.happ_bundle_url` with no fallback to the service's.
+- **Without a network**: from the service's static `roles` config (see [Service Configuration](#service-configuration)).
+
+If the named network is unregistered by the time provisioning runs — deleted between join and provision — the CLI fails with `404 unknown_network` rather than silently falling back to the static roles.
 
 ---
 
@@ -139,7 +145,9 @@ joining-cli hc-auth register [options]
 
 ## Service Configuration
 
-For the CLI to output role-keyed YAML, the joining service must be configured with `roles`:
+Role-keyed YAML requires the session's network to declare `roles`. That comes from one of two places, and a service may use either or both.
+
+**Static roles** — the service's own network, used when `provision` runs without `--network`:
 
 ```json
 {
@@ -157,6 +165,10 @@ For the CLI to output role-keyed YAML, the joining service must be configured wi
   }
 }
 ```
+
+**Registered networks** — declared per network at registration time, used when `provision` names one with `--network`. The `roles` object has the same shape as above; see JOINING_SERVICE_API.md Section 3.11 for `POST /v1/admin/networks`. A service configured with `network_registration` and no static `roles` at all is a supported deployment: it has no network of its own, and every `provision` against it must pass `--network`.
+
+In both cases `dna_hash` is required per role only when the service has `membrane_proof.enabled` — it binds the membrane proof to a DNA. Without membrane proofs, a role needs only its `modifiers`.
 
 ---
 
@@ -182,6 +194,8 @@ echo "Agent key: $AGENT_KEY"
 # 2. Get membrane proofs from joining service
 #    The joining service also calls registerAndAuthorize on hc-auth as
 #    part of the join flow, so the agent will be authorized after this.
+#    Add --network <happ_id> to provision against a registered network
+#    instead of the service's own; its roles come from that registration.
 joining-cli provision \
   --service-url $SERVICE_URL \
   --agent-key "$AGENT_KEY" \
