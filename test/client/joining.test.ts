@@ -323,7 +323,7 @@ describe('JoinSession', () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({
           linker_urls: [{ url: 'wss://linker.example.com:8090', expires_at: '2026-03-01T00:00:00Z' }],
-          membrane_proofs: { 'uhC0kDna1': 'base64proof' },
+          roles: { app_role: { membrane_proof: 'base64proof' } },
           happ_bundle_url: 'https://example.com/test.happ',
         }),
       );
@@ -335,7 +335,7 @@ describe('JoinSession', () => {
         `${TEST_BASE_URL}/join/js_creds/provision`,
       );
       expect(provision.linker_urls).toEqual([{ url: 'wss://linker.example.com:8090', expires_at: '2026-03-01T00:00:00Z' }]);
-      expect(provision.membrane_proofs).toEqual({ 'uhC0kDna1': 'base64proof' });
+      expect(provision.roles).toEqual({ app_role: { membrane_proof: 'base64proof' } });
     });
 
     it('throws not_ready when session is pending', async () => {

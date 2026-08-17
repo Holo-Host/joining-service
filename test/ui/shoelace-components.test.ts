@@ -259,7 +259,7 @@ describe('JoiningFlowSl', () => {
       if (urlStr.includes('/join/sess_1/provision')) {
         return Promise.resolve(jsonResponse({
           linker_urls: [{ url: 'wss://linker.example.com' }],
-          membrane_proofs: { dna1: 'proof' },
+          roles: { dna1: { membrane_proof: 'proof' } },
         }));
       }
       // Shoelace icon fetches or other requests — return empty response

@@ -19,7 +19,7 @@ const SERVICE_URL = 'https://joining.example.com/v1';
 
 const MOCK_PROVISION = {
   linker_urls: [{ url: 'wss://linker.example.com' }],
-  membrane_proofs: { dna1: 'base64proof' },
+  roles: { dna1: { membrane_proof: 'base64proof' } },
 };
 
 function createFlow(opts: {
@@ -69,7 +69,7 @@ describe('JoiningFlow', () => {
     const detail = await completed;
 
     expect(detail.provision.linker_urls).toEqual(MOCK_PROVISION.linker_urls);
-    expect(detail.provision.membrane_proofs).toEqual(MOCK_PROVISION.membrane_proofs);
+    expect(detail.provision.roles).toEqual(MOCK_PROVISION.roles);
   });
 
   it('completes invite_code flow with pre-filled claims', async () => {

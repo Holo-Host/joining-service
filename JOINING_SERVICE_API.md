@@ -110,9 +110,13 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
     "region_hints": ["us-east", "eu-west"]
   },
   "happ_bundle_url": "https://app.example.com/mewsfeed.happ",
-  "dna_modifiers": {
-    "network_seed": "mewsfeed-mainnet-2026",
-    "properties": {}
+  "roles": {
+    "main": {
+      "dna_modifiers": {
+        "network_seed": "mewsfeed-mainnet-2026",
+        "properties": {}
+      }
+    }
   }
 }
 ```
@@ -133,9 +137,8 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 | `linker_info.selection_mode` | string | if linker_info present | `"assigned"` (server picks linker) or `"client_choice"` (client picks from list) |
 | `linker_info.region_hints` | string[] | no | Available regions for latency optimization |
 | `happ_bundle_url` | string (URL) | no | URL to download the .happ bundle. May be absent if gated behind auth. |
-| `dna_modifiers` | object | no | DNA modifiers to apply during installation |
-| `dna_modifiers.network_seed` | string | no | Network seed for DNA hash computation |
-| `dna_modifiers.properties` | object | no | DNA properties (arbitrary JSON, msgpack-encoded by client) |
+| `roles` | object | no | Per-role DNA modifiers. Role name → `{ dna_modifiers? }`. Present whenever the service config declares `roles`. |
+| `roles[role_name].dna_modifiers` | object | no | DNA modifiers for this role (network_seed, properties, etc.) |
 | `network_config` | object | no | Network service URLs. Only present when `network.reveal_in_info` is enabled in config (default: off). Exposing these URLs publicly may increase DDoS surface area for the listed services. |
 | `network_config.auth_server_url` | string (URL) | no | HC-Auth server URL (derived from `hc_auth.url` config) |
 | `network_config.bootstrap_url` | string (URL) | no | Bootstrap server URL |
@@ -344,15 +347,19 @@ Retrieve the provision data needed to connect to the Holochain network. Only ava
     { "url": "wss://linker1.example.com:8090" },
     { "url": "wss://linker2.example.com:8090", "expires_at": "2026-02-25T18:00:00Z" }
   ],
-  "membrane_proofs": {
-    "uhC0k_chat_dna_hash...": "gqNPa6RkYXRh...",
-    "uhC0k_profile_dna_hash...": "hRtYm9keW..."
+  "roles": {
+    "chat": {
+      "membrane_proof": "gqNPa6RkYXRh...",
+      "dna_modifiers": {
+        "network_seed": "mewsfeed-mainnet-2026",
+        "properties": { "app_name": "mewsfeed" }
+      }
+    },
+    "profiles": {
+      "membrane_proof": "hRtYm9keW..."
+    }
   },
   "happ_bundle_url": "https://app.example.com/mewsfeed.happ",
-  "dna_modifiers": {
-    "network_seed": "mewsfeed-mainnet-2026",
-    "properties": {}
-  },
   "network_config": {
     "auth_server_url": "https://auth.example.com",
     "bootstrap_url": "https://bootstrap.example.com",
@@ -366,11 +373,10 @@ Retrieve the provision data needed to connect to the Holochain network. Only ava
 | `linker_urls` | LinkerUrl[] | no | Ordered list of linker URL entries (client tries in order). Absent when the service does not manage linker relay URLs. |
 | `linker_urls[].url` | string (WSS URL) | yes | WebSocket URL for this linker relay |
 | `linker_urls[].expires_at` | string (ISO 8601) | no | When this individual linker URL reservation expires. Absent means no known expiry. Client should call `POST /v1/reconnect` to obtain fresh URLs. Membrane proofs do not expire. |
-| `membrane_proofs` | object | no | Map of DnaHash (base64-encoded, e.g. `uhC0k...`) to base64-encoded msgpack membrane proof bytes. One entry per DNA role that requires a membrane proof. Absent/empty if the hApp has no membrane requirement. |
+| `roles` | object | no | Per-role provision data. Role name → `{ membrane_proof?, dna_modifiers? }`. Mirrors `hc s call install-app --roles-settings` during app installation. See `RoleProvision` type. |
+| `roles[role_name].membrane_proof` | string | no | Base64-encoded msgpack membrane proof for this role's DNA. One entry per role that requires a membrane proof. |
+| `roles[role_name].dna_modifiers` | object | no | DNA modifiers for this role (network_seed, properties, etc.) |
 | `happ_bundle_url` | string (URL) | no | URL to fetch the .happ bundle. May differ from `/info` response (gated behind auth). |
-| `dna_modifiers` | object | no | DNA modifiers to apply during installation |
-| `dna_modifiers.network_seed` | string | no | Network seed |
-| `dna_modifiers.properties` | object | no | DNA properties (JSON; client encodes to msgpack) |
 | `network_config` | object | no | Network service URLs for conductor configuration. Only present when at least one URL is available. |
 | `network_config.auth_server_url` | string (URL) | no | HC-Auth server URL (derived from `hc_auth.url` config). The conductor runtime can call `/now` on this to obtain info for `auth_material`. |
 | `network_config.bootstrap_url` | string (URL) | no | Bootstrap server URL |
@@ -658,7 +664,7 @@ Recommended limits:
 
 ### Membrane Proof Integrity
 - Generated server-side per DNA, typically includes agent key + DNA hash + timestamp + server signature.
-- `membrane_proofs` is a map of DnaHash → base64-encoded proof. Each DNA that requires a membrane proof gets its own entry.
+- Returned per role in `roles[<role>].membrane_proof` (base64-encoded). Each role whose DNA requires a membrane proof gets its own entry.
 - Opaque to the client (msgpack bytes, base64 for transport).
 - Each DNA's `genesis_self_check` callback validates its own proof independently.
 
@@ -839,7 +845,7 @@ Client                                      Joining Service
   │◄─ { status: "ready" } ───────────────────────┤
   │                                              │
   ├─ GET /v1/join/{session}/provision ──────────►│
-  │◄─ { linker_urls, membrane_proofs } ──────────┤
+  │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
 ### 8.3 EVM Wallet Signing
@@ -860,7 +866,7 @@ Client                                      Joining Service
   │◄─ { status: "ready" } ───────────────────────┤
   │                                              │
   ├─ GET /v1/join/{session}/provision ──────────►│
-  │◄─ { linker_urls, membrane_proofs } ──────────┤
+  │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
 ### 8.4 Read-Only Gateway Before Join
@@ -993,7 +999,7 @@ Client                                      Joining Service          HC-Auth Ser
   ├─ GET /v1/join/{session}/provision ──────────►│                        │
   │                                              ├─ GET /api/record ──────►│
   │                                              │◄─ { state: "authorized" }
-  │◄─ { linker_urls, membrane_proofs } ──────────┤                        │
+  │◄─ { linker_urls, roles } ────────────────────┤                        │
 ```
 
 ### 8.9 Multi-Step Verification (Email + KYC)
@@ -1024,7 +1030,7 @@ Client                                      Joining Service
   │◄─ { status: "ready" } ───────────────────────┤
   │                                              │
   ├─ GET /v1/join/{session}/provision ──────────►│
-  │◄─ { linker_urls, membrane_proofs } ──────────┤
+  │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
 ---
@@ -1053,14 +1059,15 @@ interface JoiningServiceInfo {
   };
   http_gateways?: HttpGateway[];
   auth_methods: AuthMethodEntry[];
+  /** Absent when the service does not manage linker relay URLs. */
   linker_info?: {
     selection_mode: 'assigned' | 'client_choice';
     region_hints?: string[];
   };
   happ_bundle_url?: string;
-  dna_modifiers?: DnaModifiers;
-  /** Only present when reveal_in_info is enabled in config. */
+  /** Network service URLs. Only present when reveal_in_info is enabled in config. */
   network_config?: NetworkConfig;
+  roles?: Record<string, { dna_modifiers?: DnaModifiers }>;
 }
 
 interface HttpGateway {
@@ -1071,7 +1078,7 @@ interface HttpGateway {
   expires_at?: string;
 }
 
-/** A linker WebSocket URL with optional per-URL expiration. */
+/** A linker WebSocket URL with an optional per-URL expiration. */
 interface LinkerUrl {
   url: string;
   /** When this linker URL reservation expires. Absent means no known expiry. */
@@ -1090,6 +1097,7 @@ type AuthMethod =
   | 'invite_code'
   | 'agent_allow_list'
   | 'hc_auth_approval'
+  | 'delegated_verification'
   | `x-${string}`;
 
 interface AuthMethodGroup {
@@ -1101,6 +1109,13 @@ type AuthMethodEntry = AuthMethod | AuthMethodGroup;
 interface DnaModifiers {
   network_seed?: string;
   properties?: Record<string, unknown>;
+}
+
+/** Per-role provision data, mirroring hc roles-settings. */
+interface RoleProvision {
+  /** Base64 membrane proof for this role's DNA. */
+  membrane_proof?: string;
+  dna_modifiers?: DnaModifiers;
 }
 
 // --- /v1/join ---
@@ -1154,13 +1169,12 @@ interface NetworkConfig {
 // --- /v1/join/{session}/provision ---
 
 interface JoinProvision {
-  /** Each entry may carry its own expires_at. Absent when service does not manage linker relay URLs. */
+  /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
-  membrane_proofs?: Record<string, string>;
   happ_bundle_url?: string;
-  dna_modifiers?: DnaModifiers;
-  /** Network service URLs for conductor configuration. */
+  /** Network service URLs for conductor configuration. Only present when at least one URL is available. */
   network_config?: NetworkConfig;
+  roles?: Record<string, RoleProvision>;
 }
 
 // --- /v1/reconnect ---
@@ -1172,9 +1186,8 @@ interface ReconnectRequest {
 }
 
 interface ReconnectResponse {
-  /** Each entry may carry its own expires_at. Absent when service does not manage linker relay URLs. */
+  /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
-  /** Each entry may carry its own expires_at. */
   http_gateways?: HttpGateway[];
 }
 

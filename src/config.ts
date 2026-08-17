@@ -3,6 +3,20 @@ import type { HcAuthConfig } from './hc-auth/index.js';
 import type { LinkerAuthConfig } from './linker-auth/index.js';
 import type { DelegatedVerificationConfig } from './auth-methods/delegated-verification.js';
 import { validateDelegatedVerificationConfig } from './auth-methods/delegated-verification.js';
+import { decodeHashFromBase64 } from './utils.js';
+
+/** Per-role DNA configuration, mirroring Holochain's app model. */
+export interface RoleConfig {
+  /**
+   * Base64 DnaHash ("uhC0k..."), strictly validated when present. Required
+   * when `membrane_proof.enabled` — a membrane proof is bound to a network
+   * via this hash. Must be the post-modifiers DNA hash as reported by the
+   * conductor that installed the DNA (see DEPLOYMENT.md).
+   */
+  dna_hash?: string;
+  /** Per-DNA modifiers for this role. */
+  modifiers?: DnaModifiers;
+}
 
 export interface ServiceConfig {
   happ: {
@@ -18,14 +32,10 @@ export interface ServiceConfig {
     region_hints?: string[];
   };
   /**
-   * DNA hashes for membrane proof generation.
-   * Accepts either:
-   *   - string[] — flat list of DNA hashes (proofs keyed by hash in response)
-   *   - Record<string, string> — role_name → dna_hash (proofs keyed by role name)
-   * The role-keyed form is required for CLI provisioning (roles-settings YAML output).
+   * Per-role DNA configuration: role name → { dna_hash?, modifiers? }.
+   * dna_hash is required only when membrane_proof.enabled is true.
    */
-  dna_hashes?: string[] | Record<string, string>;
-  dna_modifiers?: DnaModifiers;
+  roles?: Record<string, RoleConfig>;
   membrane_proof?: {
     enabled: boolean;
     signing_key_path?: string;
@@ -80,6 +90,20 @@ const DEFAULTS = {
 };
 
 export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
+  // Config is loaded from untyped JSON at runtime, so keys outside the
+  // ServiceConfig type can appear on the raw object. The retired
+  // dna_hashes/dna_modifiers keys are rejected with a pointer to roles
+  // rather than silently ignored.
+  const raw = partial as Partial<ServiceConfig> & {
+    dna_hashes?: unknown;
+    dna_modifiers?: unknown;
+  };
+  if ('dna_hashes' in raw || 'dna_modifiers' in raw) {
+    throw new Error(
+      'config: dna_hashes/dna_modifiers have been replaced by roles: { <role>: { dna_hash, modifiers } }',
+    );
+  }
+
   if (!partial.happ?.id || !partial.happ?.name) {
     throw new Error('config: happ.id and happ.name are required');
   }
@@ -92,6 +116,25 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
     validateDelegatedVerificationConfig(partial.delegated_verification);
   }
 
+  // An explicitly empty roles map carries no DNA information, so it is
+  // treated as absent.
+  const hasRoles = !!partial.roles && Object.keys(partial.roles).length > 0;
+  const roles: Record<string, RoleConfig> | undefined = hasRoles ? partial.roles : undefined;
+  if (roles) {
+    for (const [name, rc] of Object.entries(roles)) {
+      if (rc.dna_hash !== undefined && !isValidDnaHash(rc.dna_hash)) {
+        throw new Error(
+          `config: roles.${name}.dna_hash is not a valid DnaHash (expected base64 "uhC0k..." decoding to 39 bytes)`,
+        );
+      }
+      if (partial.membrane_proof?.enabled && !rc.dna_hash) {
+        throw new Error(
+          `config: roles.${name}.dna_hash is required when membrane_proof.enabled is true`,
+        );
+      }
+    }
+  }
+
   return {
     ...partial,
     happ: partial.happ,
@@ -99,5 +142,18 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
     session: { ...DEFAULTS.session, ...partial.session },
     reconnect: { ...DEFAULTS.reconnect, ...partial.reconnect },
     port: partial.port ?? DEFAULTS.port,
+    roles,
   };
+}
+
+function isValidDnaHash(hash: string): boolean {
+  try {
+    const bytes = decodeHashFromBase64(hash);
+    // 39-byte HoloHash with DnaHash prefix 0x84 0x2d 0x24
+    return (
+      bytes.length === 39 && bytes[0] === 0x84 && bytes[1] === 0x2d && bytes[2] === 0x24
+    );
+  } catch {
+    return false;
+  }
 }

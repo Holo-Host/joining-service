@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createTestApp, fakeAgentKey } from './helpers.js';
+import { createTestApp, fakeAgentKey, fakeDnaHash } from './helpers.js';
 
 describe('Open join flow', () => {
   it('GET /.well-known/holo-joining returns discovery document', async () => {
@@ -152,7 +152,7 @@ describe('Open join flow', () => {
   it('provision include membrane proofs when configured', async () => {
     const { request } = await createTestApp({
       membrane_proof: { enabled: true },
-      dna_hashes: ['uhC0kTestDnaHash1'],
+      roles: { app_role: { dna_hash: fakeDnaHash(1) } },
     });
     const agentKey = fakeAgentKey();
 
@@ -166,9 +166,8 @@ describe('Open join flow', () => {
     const credRes = await request(`/v1/join/${session}/provision`);
     const creds = await credRes.json();
 
-    expect(creds.membrane_proofs).toBeDefined();
-    expect(creds.membrane_proofs['uhC0kTestDnaHash1']).toBeDefined();
+    expect(creds.roles.app_role.membrane_proof).toBeDefined();
     // Should be a base64 string
-    expect(typeof creds.membrane_proofs['uhC0kTestDnaHash1']).toBe('string');
+    expect(typeof creds.roles.app_role.membrane_proof).toBe('string');
   });
 });
