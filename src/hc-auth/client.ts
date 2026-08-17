@@ -55,10 +55,22 @@ export class HcAuthClient {
   /**
    * Register a raw Ed25519 public key as a pending auth request.
    *
-   * Corresponds to PUT /request-auth/{pubkey} in the client API.
-   * 202 ACCEPTED = newly registered (pending).
-   * 429 TOO MANY REQUESTS = already pending; treated as success so that
-   *   registerAndAuthorize() can proceed to the transition step.
+   * Corresponds to PUT /request-auth/{pubkey} in the client API, which
+   * returns:
+   *   200 OK                 registered (pending)
+   *   409 CONFLICT           key already has a record -- once hc-auth-server
+   *                          maps `already_exists` to a conflict status
+   *   500 INTERNAL           what `already_exists` currently surfaces as,
+   *                          since the server reports it as a storage failure
+   *   429 TOO MANY REQUESTS  pending-request limit reached; nothing was stored
+   *   401 UNAUTHORIZED       invalid pubkey
+   *
+   * 409 and 500 are treated as success because the caller's next step is the
+   * pending -> authorized transition, which is exactly what an
+   * already-registered key needs. A 500 that is a genuine storage failure
+   * rather than `already_exists` is not swallowed: the transition that
+   * follows has no record to act on and throws there. Accepting both lets
+   * the server-side conflict mapping land without a lockstep release here.
    */
   async requestAuth(rawPubKeyB64url: string, metadata: unknown): Promise<void> {
     const resp = await fetch(
@@ -69,12 +81,22 @@ export class HcAuthClient {
         body: JSON.stringify(metadata),
       },
     );
-    // 202 = pending (success); 429 = already pending (still ok to transition)
-    if (!resp.ok && resp.status !== 429) {
+
+    if (resp.ok || resp.status === 409 || resp.status === 500) return;
+
+    // 429 means the limit was hit and the key was NOT registered. Naming that
+    // here matters: proceeding would fail at the transition step instead, and
+    // report a missing record rather than the rate limit that caused it.
+    if (resp.status === 429) {
       throw new Error(
-        `hc-auth PUT /request-auth returned ${resp.status}: ${await resp.text()}`,
+        'hc-auth PUT /request-auth returned 429: pending-request limit reached, ' +
+          `key was not registered: ${await resp.text()}`,
       );
     }
+
+    throw new Error(
+      `hc-auth PUT /request-auth returned ${resp.status}: ${await resp.text()}`,
+    );
   }
 
   /**
