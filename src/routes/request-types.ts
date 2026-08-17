@@ -50,3 +50,32 @@ export const RegisterAgentBody = v.object({
   label: v.optional(v.string()),
 });
 export type RegisterAgentBody = v.InferOutput<typeof RegisterAgentBody>;
+
+// ---- Admin: POST /v1/admin/networks ----
+
+const RoleConfigBody = v.object({
+  dna_hash: v.optional(v.string()),
+  // network_seed is typed because it's load-bearing for DNA identity
+  // (a non-string seed would silently break agent connectivity); other
+  // modifier keys (e.g. properties) pass through unvalidated.
+  modifiers: v.optional(
+    v.looseObject({
+      network_seed: v.optional(v.string()),
+    }),
+  ),
+});
+
+const HappMetadataBody = v.object({
+  name: v.optional(v.string()),
+  description: v.optional(v.string()),
+  icon_url: v.optional(v.string()),
+  happ_bundle_url: v.optional(v.string()),
+});
+
+export const RegisterNetworkBody = v.object({
+  happ_id: v.string(),
+  happ: v.optional(HappMetadataBody),
+  roles: v.record(v.string(), RoleConfigBody),
+  allowed_agents: v.optional(v.array(v.string())),
+});
+export type RegisterNetworkBody = v.InferOutput<typeof RegisterNetworkBody>;

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as ed from '@noble/ed25519';
 import type { AgentPubKeyB64, Challenge } from '../types.js';
-import type { AuthMethodPlugin } from './plugin.js';
+import type { AuthMethodPlugin, JoinContext } from './plugin.js';
 import type { AllowedAgentStore } from '../agent-registration/store.js';
 import { fromBase64, decodeHashFromBase64 } from '../utils.js';
 
@@ -20,10 +20,13 @@ export class AgentAllowListAuthMethod implements AuthMethodPlugin {
   async createChallenges(
     agentKey: string,
     _claims: Record<string, string>,
+    _config?: unknown,
+    joinContext?: JoinContext,
   ): Promise<Challenge[]> {
     const allowed =
       this.allowedAgents.has(agentKey) ||
-      (this.store ? await this.store.has(agentKey) : false);
+      (this.store ? await this.store.has(agentKey) : false) ||
+      (joinContext?.network?.allowed_agents?.includes(agentKey) ?? false);
     if (!allowed) {
       // Return empty -- in an OR group, other methods can still work.
       // In an AND context, app.ts detects this as an unsatisfiable method.

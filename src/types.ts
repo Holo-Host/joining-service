@@ -77,6 +77,8 @@ export interface RoleProvision {
 export interface JoinRequest {
   agent_key: string;
   claims?: Record<string, string>;
+  /** Named network to join. Must be registered with the service (see network_registration). */
+  network?: string;
 }
 
 export interface JoinResponse {

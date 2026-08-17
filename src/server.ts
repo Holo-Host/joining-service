@@ -27,6 +27,9 @@ import { HcAuthClient } from './hc-auth/index.js';
 import { MemoryAllowedAgentStore } from './agent-registration/memory-store.js';
 import { SqliteAllowedAgentStore } from './agent-registration/sqlite-store.js';
 import type { AllowedAgentStore } from './agent-registration/store.js';
+import { MemoryNetworkStore } from './network-registration/memory-store.js';
+import { SqliteNetworkStore } from './network-registration/sqlite-store.js';
+import type { NetworkStore } from './network-registration/store.js';
 
 function buildEmailTransport(config: ServiceConfig): EmailTransport | null {
   if (!config.email) return null;
@@ -193,6 +196,27 @@ export function buildAllowedAgentStore(config: ServiceConfig): AllowedAgentStore
   return new MemoryAllowedAgentStore();
 }
 
+/**
+ * Store for runtime-registered networks (multi-network admin API). Backend
+ * mirrors session.store, same as buildAllowedAgentStore: sqlite deployments
+ * get a sibling `networks.db` next to the sessions db. Workers construct
+ * `KvNetworkStore` themselves.
+ */
+export function buildNetworkStore(config: ServiceConfig): NetworkStore {
+  if (config.session!.store === 'sqlite') {
+    const dbPath = config.session!.db_path ?? './sessions.db';
+    // ':memory:' has no sibling directory to derive a shared path from --
+    // an in-memory sessions db implies an in-memory network store too.
+    if (dbPath === ':memory:') {
+      return new MemoryNetworkStore();
+    }
+    const networksDbPath = join(dirname(dbPath), 'networks.db');
+    return new SqliteNetworkStore(networksDbPath);
+  }
+
+  return new MemoryNetworkStore();
+}
+
 export async function startServer(
   configInput: Partial<ServiceConfig>,
   urlProvider?: UrlProvider,
@@ -219,6 +243,28 @@ export async function startServer(
       ? buildAllowedAgentStore(config)
       : undefined;
 
+  const networkStore = config.network_registration
+    ? buildNetworkStore(config)
+    : undefined;
+
+  if (networkStore) {
+    // Fire-and-forget: a network registered under the service's own static
+    // happ id is shadowed by the join/info normalization rule (see app.ts)
+    // and can never be reached as a distinct network -- warn operators
+    // without blocking startup on the store round-trip.
+    networkStore.get(config.happ.id).then((record) => {
+      if (record) {
+        console.warn(
+          `[network_registration] a network is registered under happ_id "${config.happ.id}", ` +
+            "which is this service's own static happ id -- it is shadowed by the static " +
+            'network and unreachable via POST /v1/join or GET /v1/info/:happ_id.',
+        );
+      }
+    }).catch((err) => {
+      console.error('[network_registration] startup shadow check failed (non-fatal):', err);
+    });
+  }
+
   const emailTransport = buildEmailTransport(config);
   const authPlugins = buildAuthPlugins(config, emailTransport, hcAuthClient, allowedAgentStore);
   const proofGenerator = await buildProofGenerator(config);
@@ -233,6 +279,7 @@ export async function startServer(
     urlProvider: resolvedUrlProvider,
     hcAuthClient,
     allowedAgentStore,
+    networkStore,
   };
 
   const app = createApp(context);

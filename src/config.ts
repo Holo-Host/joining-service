@@ -75,6 +75,11 @@ export interface ServiceConfig {
     /** Bearer secret for the /v1/admin/allowed-agents routes. */
     admin_secret: string;
   };
+  /** Enables the /v1/admin/networks routes for runtime network registration. */
+  network_registration?: {
+    /** Bearer secret for the /v1/admin/networks routes. */
+    admin_secret: string;
+  };
 }
 
 const DEFAULTS = {
@@ -146,7 +151,7 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
   };
 }
 
-function isValidDnaHash(hash: string): boolean {
+export function isValidDnaHash(hash: string): boolean {
   try {
     const bytes = decodeHashFromBase64(hash);
     // 39-byte HoloHash with DnaHash prefix 0x84 0x2d 0x24

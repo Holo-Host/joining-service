@@ -21,6 +21,8 @@ import type { Hono } from 'hono';
 import { encodeHashToBase64, dhtLocationFrom32 } from '../src/utils.js';
 import { MemoryAllowedAgentStore } from '../src/agent-registration/memory-store.js';
 import type { AllowedAgentStore } from '../src/agent-registration/store.js';
+import { MemoryNetworkStore } from '../src/network-registration/memory-store.js';
+import type { NetworkStore } from '../src/network-registration/store.js';
 import { LinkerRegistrationStore } from '../src/linker-registration/store.js';
 import { createMockKV } from './linker-registration/helpers.js';
 
@@ -122,6 +124,10 @@ export async function createTestApp(
       ? new LinkerRegistrationStore(createMockKV())
       : undefined;
 
+  const networkStore: NetworkStore | undefined = config.network_registration
+    ? new MemoryNetworkStore()
+    : undefined;
+
   let authPlugins: Map<string, AuthMethodPlugin>;
   if (pluginOverrides) {
     authPlugins = pluginOverrides;
@@ -188,6 +194,7 @@ export async function createTestApp(
     hcAuthClient,
     allowedAgentStore,
     linkerRegistrationStore,
+    networkStore,
   };
 
   const app = createApp(ctx);

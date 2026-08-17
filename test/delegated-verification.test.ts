@@ -411,6 +411,50 @@ describe('Delegated verification flow', () => {
     expect(provisionRes.status).toBe(200);
   });
 
+  it('delegated join naming a registered network provisions that network\'s roles', async () => {
+    const { request } = await createTestApp({
+      auth_methods: ['delegated_verification'],
+      delegated_verification: delegatedConfig,
+      membrane_proof: { enabled: true },
+      network_registration: { admin_secret: 'net-admin-secret' },
+      roles: { default_role: { dna_hash: fakeDnaHash(30) } },
+    });
+
+    const registerRes = await request('/v1/admin/networks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer net-admin-secret',
+      },
+      body: JSON.stringify({
+        happ_id: 'delegated-net',
+        roles: { network_role: { dna_hash: fakeDnaHash(31) } },
+      }),
+    });
+    expect(registerRes.status).toBe(201);
+
+    const joinRes = await request('/v1/join', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Partner-Api-Key': TEST_API_KEY,
+      },
+      body: JSON.stringify({
+        agent_key: fakeAgentKey(60),
+        claims: { email: 'user@example.com' },
+        delegated_verification: delegatedPayload(),
+        network: 'delegated-net',
+      }),
+    });
+
+    expect(joinRes.status).toBe(201);
+    const { session, status } = await joinRes.json();
+    expect(status).toBe('ready');
+
+    const prov = await (await request(`/v1/join/${session}/provision`)).json();
+    expect(Object.keys(prov.roles)).toEqual(['network_role']);
+  });
+
   // #6 — Claim mismatch test
   it('attested_claims mismatch with body.claims returns 400', async () => {
     const { request } = await createTestApp({
