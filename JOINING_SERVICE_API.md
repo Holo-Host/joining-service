@@ -450,7 +450,7 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 
 Operator endpoint to register an agent key at runtime, enabling it to join via the `agent_allow_list` auth method. This complements the static `allowed_agents` config list — registered agents and config-listed agents are treated identically during join authorization.
 
-Re-registering an existing `agent_key` replaces the record, including clearing a previously set `label` if none is supplied.
+Re-registering an existing `agent_key` replaces the record, including clearing a previously set `label` if none is supplied. The original `registered_at` is carried forward and the response is `200 OK` rather than `201 Created`. To reset `registered_at`, unregister the agent first.
 
 **Authentication**: Bearer token via `Authorization` header. The token value must match the server's `agent_registration.admin_secret` config. Requests without the header return 401 `unauthorized`; requests with a wrong token return 403 `forbidden`.
 
@@ -467,7 +467,7 @@ Re-registering an existing `agent_key` replaces the record, including clearing a
 | `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (must be valid base64 and exactly 39 bytes) |
 | `label` | string | no | Human-readable label for this agent (e.g., hApp name, operator name) |
 
-**Response** (`201 Created`):
+**Response** (`201 Created` for a new agent, `200 OK` when updating an existing one):
 ```json
 {
   "agent_key": "uhCAk...",
@@ -480,7 +480,7 @@ Re-registering an existing `agent_key` replaces the record, including clearing a
 |-------|------|-------------|
 | `agent_key` | string | The registered agent key |
 | `label` | string | Label (if provided in request) |
-| `registered_at` | string (ISO 8601) | Timestamp when the agent was registered |
+| `registered_at` | string (ISO 8601) | Timestamp when the agent was **first** registered; unchanged by re-registration |
 
 **Errors**:
 

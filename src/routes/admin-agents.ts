@@ -41,9 +41,17 @@ export function createAdminAgentRoutes(
       return errorJson('invalid_agent_key', validation.reason!, 400);
     }
 
-    const agent = { agent_key, label, registered_at: new Date().toISOString() };
+    // Re-registering an existing agent updates its label but keeps the
+    // original `registered_at` -- the field records when the agent was first
+    // allowed. DELETE followed by POST is the way to reset it.
+    const existing = await store.get(agent_key);
+    const agent = {
+      agent_key,
+      label,
+      registered_at: existing?.registered_at ?? new Date().toISOString(),
+    };
     await store.put(agent);
-    return c.json(agent, 201);
+    return c.json(agent, existing ? 200 : 201);
   });
 
   // ---- GET /v1/admin/allowed-agents ----

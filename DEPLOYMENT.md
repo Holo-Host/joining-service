@@ -373,6 +373,8 @@ Response:
 }
 ```
 
+Re-posting an already-registered `agent_key` updates its label and returns `200 OK`; `registered_at` keeps the first registration's timestamp. Unregister the agent first if you want it reset.
+
 Registered agents are persisted using the same backend as `session.store`: `memory` agents are ephemeral and lost on restart; `sqlite` agents are written to `allowed-agents.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext; the bundled worker entry does not wire this yet.
 
 Registrations only affect who can join when `agent_allow_list` is present in `auth_methods` — if `agent_registration.admin_secret` is set without it, the server logs a startup warning that registrations will have no effect on joins. Note also that `allowed-agents.db` is created on `sqlite` deployments whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — the static `allowed_agents` list uses the same store.

@@ -20,6 +20,9 @@ export class SqliteAllowedAgentStore implements AllowedAgentStore {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    // Last-write-wins upsert: the caller owns `registered_at` (the admin route
+    // carries the original value forward when re-registering), so the store
+    // does not second-guess the record it is handed.
     this.stmtPut = this.db.prepare(`
       INSERT INTO allowed_agents (agent_key, label, registered_at)
       VALUES (@agent_key, @label, @registered_at)

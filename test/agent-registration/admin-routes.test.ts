@@ -71,6 +71,39 @@ describe('admin allowed-agents routes', () => {
     expect(list.agents[0].label).toBe('acme progenitor');
   });
 
+  it('preserves registered_at when re-registering an existing agent', async () => {
+    const { authed, store } = setup();
+    const key = fakeAgentKey(42);
+    const firstRegistration = '2026-08-13T00:00:00.000Z';
+    await store.put({ agent_key: key, label: 'typo', registered_at: firstRegistration });
+
+    const res = await authed('/v1/admin/allowed-agents', {
+      method: 'POST',
+      body: JSON.stringify({ agent_key: key, label: 'acme progenitor' }),
+    });
+
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    expect(updated.label).toBe('acme progenitor');
+    expect(updated.registered_at).toBe(firstRegistration);
+    expect((await store.get(key))?.registered_at).toBe(firstRegistration);
+  });
+
+  it('stamps a fresh registered_at after an agent is unregistered', async () => {
+    const { authed, store } = setup();
+    const key = fakeAgentKey(43);
+    await store.put({ agent_key: key, registered_at: '2026-08-13T00:00:00.000Z' });
+    await authed(`/v1/admin/allowed-agents/${encodeURIComponent(key)}`, { method: 'DELETE' });
+
+    const res = await authed('/v1/admin/allowed-agents', {
+      method: 'POST',
+      body: JSON.stringify({ agent_key: key }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).registered_at).not.toBe('2026-08-13T00:00:00.000Z');
+  });
+
   it('rejects a malformed agent key with 400 invalid_agent_key', async () => {
     const { authed } = setup();
     const res = await authed('/v1/admin/allowed-agents', {
