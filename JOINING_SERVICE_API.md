@@ -959,14 +959,28 @@ Recommended limits:
 
 ## 7. Security Considerations
 
+### Admission Control Scope
+
+This service decides who is allowed to join a network. It does not prevent source-chain forks, and cannot.
+
+Withholding a fresh membrane proof from an agent that has already joined does not stop that agent from running two conductors on one identity. Anyone holding the private key can copy the whole conductor directory — key, source chain, and the membrane proof issued at the original provision — and start a second node without contacting this service at all. Fork prevention is Holochain's: divergent chains are caught during validation and answered with warrants against the agent that produced them.
+
+`409 agent_already_joined` is therefore not a fork guard and should not be defended as one. It exists because `POST /v1/join` carries no proof of key possession — it accepts an agent key, which is public information, and the session token it returns is a bearer credential for `GET /v1/join/{session}/provision`. Answering a repeat join with the existing session would let any third party who knows an agent's public key confirm that agent's membership, read `network_config`, the linker URLs, and the hApp bundle URL, and mint membrane proofs in that agent's name. It would also return before authentication is evaluated, so an agent removed from an allow list, or admitted on a since-revoked invite, would keep provisioning. The recovery path for the legitimate key holder is `POST /v1/reconnect` (Section 3.6), which requires a signature.
+
 ### Session Scoping
 - Each session is bound to the `agent_key` that created it. Provision data is only issued for that agent.
 - Session tokens: cryptographically random, at least 128 bits of entropy, prefixed `js_`.
-- Expiry: 1 hour for pending sessions, 24 hours for ready sessions.
+- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire.
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
 - The server does NOT verify private key ownership — that proof happens at the Holochain network level during genesis and all subsequent signed actions.
+
+### Reconnect Replay Window
+
+`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting any timestamp within `reconnect.timestamp_tolerance_seconds` of server time (default 300). Ready sessions do not expire, so a reconnect request observed anywhere — a proxy log, a debug capture, a compromised client — can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
+
+Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to widen the signed payload beyond the bare timestamp — covering at least the agent key and a server-issued nonce — so that a captured signature cannot be replayed at all.
 
 ### Membrane Proof Integrity
 - Generated server-side per DNA, typically includes agent key + DNA hash + timestamp + server signature.
