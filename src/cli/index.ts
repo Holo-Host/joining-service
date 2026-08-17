@@ -99,6 +99,7 @@ Provision options:
   --discover <domain>           Auto-discover service via .well-known
   --invite-code <code>          Invite code (also reads INVITE_CODE env)
   --email <address>             Email for email_code auth
+  --network <id>                happ_id of a registered network to join
   --output <path>               Output file (default: stdout)
   --format <yaml|json>          Output format (default: yaml)
   --poll-timeout <seconds>      Max wait for async challenges (default: 300)
@@ -150,6 +151,7 @@ async function runProvision(args: string[]): Promise<void> {
       'keyutil-bin': { type: 'string' },
       'invite-code': { type: 'string' },
       'email': { type: 'string' },
+      'network': { type: 'string' },
       'output': { type: 'string' },
       'format': { type: 'string' },
       'poll-timeout': { type: 'string' },
@@ -177,6 +179,7 @@ async function runProvision(args: string[]): Promise<void> {
     serviceUrl: values['service-url'] as string,
     discover: values['discover'] as string,
     agentKey,
+    network: values['network'] as string,
     lair,
     claims: Object.keys(claims).length > 0 ? claims : undefined,
     format: format as 'yaml' | 'json',

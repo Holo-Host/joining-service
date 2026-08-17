@@ -127,14 +127,18 @@ export class JoinSession {
 export class JoiningClient {
   private readonly baseUrl: string;
   private cachedInfo?: JoiningServiceInfo;
+  private readonly discoveredHappId?: string;
 
-  private constructor(baseUrl: string) {
+  private constructor(baseUrl: string, discoveredHappId?: string) {
     // Strip trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.discoveredHappId = discoveredHappId;
   }
 
   /**
    * Discover a joining service from the app domain's .well-known endpoint.
+   * Retains the document's `happ_id` so a later `join()` call can default to
+   * it without the caller having to thread it through by hand.
    */
   static async discover(appDomain: string): Promise<JoiningClient> {
     const origin = appDomain.startsWith('http')
@@ -152,7 +156,7 @@ export class JoiningClient {
     }
 
     const body = await res.json() as WellKnownHoloJoining;
-    return new JoiningClient(body.joining_service_url);
+    return new JoiningClient(body.joining_service_url, body.happ_id);
   }
 
   /**
@@ -182,15 +186,31 @@ export class JoiningClient {
    *
    * @param agentKey - Base64-encoded 39-byte AgentPubKey
    * @param claims - Optional identity claims (email, invite_code, etc.)
+   * @param network - happ_id of a registered network to join. Determines
+   *   which network's `roles` (and therefore membrane proofs) the session
+   *   receives at provision, instead of the service's static `roles`.
+   *   Three-way: omit (`undefined`) to default to the happ_id discovered by
+   *   `discover()`, if any (naming the statically configured network's own
+   *   happ_id is harmless -- the server normalizes it to the same session
+   *   scope as an omitted `network`); pass `null` to explicitly suppress the
+   *   discovered default and send no `network` at all; pass a string to
+   *   override discovery with that network.
    * @returns A JoinSession — check `.status` to determine next steps
    */
   async join(
     agentKey: string,
     claims?: Record<string, string>,
+    network?: string | null,
   ): Promise<JoinSession> {
     const body: Record<string, unknown> = { agent_key: agentKey };
     if (claims && Object.keys(claims).length > 0) {
       body.claims = claims;
+    }
+    // undefined -> fall back to the discovered happ_id; null -> explicit
+    // opt-out (send no network); a string -> use it as-is.
+    const resolvedNetwork = network === undefined ? this.discoveredHappId : network;
+    if (resolvedNetwork) {
+      body.network = resolvedNetwork;
     }
 
     const res = await fetch(`${this.baseUrl}/join`, {
