@@ -14,10 +14,21 @@ interface KVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
 }
 
 const SESSION_PREFIX = 'session:';
 const AGENT_INDEX_PREFIX = 'agent:';
+
+/** Composite agent-index key: session uniqueness is per (agent, network). */
+function agentIndexKey(agentKey: string, network?: string): string {
+  return `${AGENT_INDEX_PREFIX}${agentKey}\0${network ?? ''}`;
+}
+
+/** Prefix under which all of an agent's (agent, network) index entries live. */
+function agentIndexPrefix(agentKey: string): string {
+  return `${AGENT_INDEX_PREFIX}${agentKey}\0`;
+}
 
 export class KvSessionStore implements SessionStore {
   private kv: KVNamespace;
@@ -39,7 +50,7 @@ export class KvSessionStore implements SessionStore {
       opts,
     );
     await this.kv.put(
-      AGENT_INDEX_PREFIX + data.agent_key,
+      agentIndexKey(data.agent_key, data.network),
       data.id,
       opts,
     );
@@ -67,7 +78,7 @@ export class KvSessionStore implements SessionStore {
     // Refresh the agent index entry if status changed
     if (data.status) {
       await this.kv.put(
-        AGENT_INDEX_PREFIX + updated.agent_key,
+        agentIndexKey(updated.agent_key, updated.network),
         sessionId,
         opts,
       );
@@ -77,15 +88,43 @@ export class KvSessionStore implements SessionStore {
   async delete(sessionId: string): Promise<void> {
     const existing = await this.get(sessionId);
     if (existing) {
-      await this.kv.delete(AGENT_INDEX_PREFIX + existing.agent_key);
+      await this.kv.delete(agentIndexKey(existing.agent_key, existing.network));
     }
     await this.kv.delete(SESSION_PREFIX + sessionId);
   }
 
-  async findByAgentKey(agentKey: string): Promise<SessionData | null> {
-    const sessionId = await this.kv.get(AGENT_INDEX_PREFIX + agentKey);
+  async findByAgentKey(agentKey: string, network?: string): Promise<SessionData | null> {
+    const sessionId = await this.kv.get(agentIndexKey(agentKey, network));
     if (!sessionId) return null;
     return this.get(sessionId);
+  }
+
+  /**
+   * Considers every live session for the agent across all networks (not just
+   * the first found in `list()` order) and prefers a ready one -- a pending
+   * session on one network must not shadow a ready session on another, the
+   * same rule MemorySessionStore and SqliteSessionStore apply. KV's own TTL
+   * (`expirationTtl`) prunes truly expired entries server-side, so `get()`
+   * returning null for a stale index entry is the only "expired" case this
+   * store needs to skip past.
+   */
+  async findAnyByAgentKey(agentKey: string): Promise<SessionData | null> {
+    const { keys } = await this.kv.list({ prefix: agentIndexPrefix(agentKey) });
+    let best: SessionData | null = null;
+    for (const key of keys) {
+      const sessionId = await this.kv.get(key.name);
+      if (!sessionId) continue;
+      const candidate = await this.get(sessionId);
+      if (!candidate) continue;
+      if (
+        !best ||
+        (candidate.status === 'ready' && best.status !== 'ready') ||
+        (candidate.status === best.status && candidate.created_at > best.created_at)
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
   }
 
   /** Ready sessions never expire; pending sessions use the configured TTL. */

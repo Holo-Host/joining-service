@@ -9,7 +9,8 @@ const SCHEMA = `
     challenges TEXT NOT NULL,
     claims TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    reason TEXT
+    reason TEXT,
+    network TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_agent_key ON sessions(agent_key);
 `;
@@ -23,6 +24,7 @@ export class SqliteSessionStore implements SessionStore {
   private stmtUpdate: Database.Statement;
   private stmtDelete: Database.Statement;
   private stmtFindByAgent: Database.Statement;
+  private stmtFindByAgentScoped: Database.Statement;
   private stmtCleanup: Database.Statement;
 
   constructor(
@@ -35,10 +37,15 @@ export class SqliteSessionStore implements SessionStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    // Composite index for the exact-scope (agent_key, network) lookup that
+    // backs join's uniqueness check.
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_agent_network ON sessions(agent_key, network)',
+    );
 
     this.stmtInsert = this.db.prepare(`
-      INSERT INTO sessions (id, agent_key, status, challenges, claims, created_at, reason)
-      VALUES (@id, @agent_key, @status, @challenges, @claims, @created_at, @reason)
+      INSERT INTO sessions (id, agent_key, status, challenges, claims, created_at, reason, network)
+      VALUES (@id, @agent_key, @status, @challenges, @claims, @created_at, @reason, @network)
     `);
 
     this.stmtGet = this.db.prepare(`
@@ -55,8 +62,21 @@ export class SqliteSessionStore implements SessionStore {
       DELETE FROM sessions WHERE id = ?
     `);
 
+    // Live sessions only (ready never expires; pending must be within TTL --
+    // mirrors isExpired()), preferring a ready session over a pending one so
+    // an expired-but-not-yet-swept pending row on one network can't shadow a
+    // live ready session on another.
     this.stmtFindByAgent = this.db.prepare(`
-      SELECT * FROM sessions WHERE agent_key = ? ORDER BY created_at DESC LIMIT 1
+      SELECT * FROM sessions
+      WHERE agent_key = ? AND (status = 'ready' OR created_at >= ?)
+      ORDER BY (status = 'ready') DESC, created_at DESC
+      LIMIT 1
+    `);
+
+    // "IS" (rather than "=") NULL-safely matches the no-network scope when
+    // the bound network parameter is null.
+    this.stmtFindByAgentScoped = this.db.prepare(`
+      SELECT * FROM sessions WHERE agent_key = ? AND network IS ? ORDER BY created_at DESC LIMIT 1
     `);
 
     this.stmtCleanup = this.db.prepare(`
@@ -74,6 +94,7 @@ export class SqliteSessionStore implements SessionStore {
       claims: JSON.stringify(data.claims),
       created_at: data.created_at,
       reason: data.reason ?? null,
+      network: data.network ?? null,
     });
   }
 
@@ -108,8 +129,8 @@ export class SqliteSessionStore implements SessionStore {
     this.stmtDelete.run(sessionId);
   }
 
-  async findByAgentKey(agentKey: string): Promise<SessionData | null> {
-    const row = this.stmtFindByAgent.get(agentKey) as RawRow | undefined;
+  async findByAgentKey(agentKey: string, network?: string): Promise<SessionData | null> {
+    const row = this.stmtFindByAgentScoped.get(agentKey, network ?? null) as RawRow | undefined;
     if (!row) return null;
 
     const session = rowToSession(row);
@@ -118,6 +139,14 @@ export class SqliteSessionStore implements SessionStore {
       return null;
     }
     return session;
+  }
+
+  async findAnyByAgentKey(agentKey: string): Promise<SessionData | null> {
+    const row = this.stmtFindByAgent.get(agentKey, Date.now() - this.pendingTtlMs) as
+      | RawRow
+      | undefined;
+    if (!row) return null;
+    return rowToSession(row);
   }
 
   cleanup(): void {
@@ -144,6 +173,7 @@ interface RawRow {
   claims: string;
   created_at: number;
   reason: string | null;
+  network: string | null;
 }
 
 function rowToSession(row: RawRow): SessionData {
@@ -155,5 +185,6 @@ function rowToSession(row: RawRow): SessionData {
     claims: JSON.parse(row.claims) as Record<string, string>,
     created_at: row.created_at,
     reason: row.reason ?? undefined,
+    network: row.network ?? undefined,
   };
 }

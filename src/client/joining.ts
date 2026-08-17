@@ -235,24 +235,40 @@ export class JoiningClient {
   }
 
   /**
-   * Reconnect an already-joined agent to get fresh linker/gateway URLs.
+   * Reconnect an already-joined agent to get fresh linker/gateway URLs and,
+   * when the agent has a ready session for the requested network, that
+   * session's token -- the recovery path for an agent that completed
+   * `join()` and crashed before calling `getProvision()`, since a fresh
+   * `join()` after that point only gets `409 agent_already_joined`.
    *
    * @param agentKey - Base64-encoded 39-byte AgentPubKey
    * @param signTimestamp - Callback that signs an ISO 8601 timestamp string
    *   with the agent's ed25519 private key and returns the signature bytes
+   * @param network - happ_id of the network whose session token to look up.
+   *   Omit to target the statically configured network (naming it explicitly
+   *   is equivalent). Does not affect what gets signed: the signature covers
+   *   only the timestamp, so `network` is safe to add to the request body
+   *   without a signer-side change -- it selects among the agent's own
+   *   already-authenticated sessions rather than authorizing anything new.
    */
   async reconnect(
     agentKey: string,
     signTimestamp: (timestamp: string) => Promise<Uint8Array>,
+    network?: string,
   ): Promise<ReconnectResponse> {
     const timestamp = new Date().toISOString();
     const signatureBytes = await signTimestamp(timestamp);
     const signature = uint8ArrayToBase64(signatureBytes);
 
+    const body: Record<string, unknown> = { agent_key: agentKey, timestamp, signature };
+    if (network !== undefined) {
+      body.network = network;
+    }
+
     const res = await fetch(`${this.baseUrl}/reconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_key: agentKey, timestamp, signature }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
@@ -260,6 +276,36 @@ export class JoiningClient {
     }
 
     return await res.json() as ReconnectResponse;
+  }
+
+  /**
+   * Reconnect and, when a session token comes back, immediately fetch its
+   * provision -- the one-call version of the crash-recovery path: an agent
+   * that joined and crashed before provisioning calls this instead of
+   * `join()` to pick up where it left off. `provision` is absent when the
+   * requested network has no ready session (`reconnect.session` absent too),
+   * which callers should treat as "fall through to `join()` for this
+   * network".
+   *
+   * @param agentKey - Base64-encoded 39-byte AgentPubKey
+   * @param signTimestamp - Callback that signs an ISO 8601 timestamp string
+   *   with the agent's ed25519 private key and returns the signature bytes
+   * @param network - happ_id of the network to recover. Omit for the
+   *   statically configured network.
+   */
+  async reconnectAndProvision(
+    agentKey: string,
+    signTimestamp: (timestamp: string) => Promise<Uint8Array>,
+    network?: string,
+  ): Promise<{ reconnect: ReconnectResponse; provision?: JoinProvision }> {
+    const reconnect = await this.reconnect(agentKey, signTimestamp, network);
+    if (!reconnect.session) {
+      return { reconnect };
+    }
+
+    const session = new JoinSession(this.baseUrl, reconnect.session, 'ready');
+    const provision = await session.getProvision();
+    return { reconnect, provision };
   }
 
   /** The resolved base URL of this joining service. */

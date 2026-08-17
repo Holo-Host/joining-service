@@ -310,8 +310,83 @@ describe('JoiningClient', () => {
       }
     });
 
+    it('includes network in the request body when given', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ linker_urls: [] }),
+      );
+
+      const client = JoiningClient.fromUrl(TEST_BASE_URL);
+      const signCallback = vi.fn().mockResolvedValue(new Uint8Array(64));
+      await client.reconnect('uhCAkAgent', signCallback, 'acme-net');
+
+      const [, init] = mockFetch.mock.calls[0];
+      expect(JSON.parse(init.body as string)).toMatchObject({
+        agent_key: 'uhCAkAgent',
+        network: 'acme-net',
+      });
+    });
+
+    it('omits network from the request body when not given', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ linker_urls: [] }),
+      );
+
+      const client = JoiningClient.fromUrl(TEST_BASE_URL);
+      const signCallback = vi.fn().mockResolvedValue(new Uint8Array(64));
+      await client.reconnect('uhCAkAgent', signCallback);
+
+      const [, init] = mockFetch.mock.calls[0];
+      expect(JSON.parse(init.body as string)).not.toHaveProperty('network');
+    });
   });
 
+  describe('reconnectAndProvision', () => {
+    it('reconnects and fetches provision when a session token comes back', async () => {
+      const signCallback = vi.fn().mockResolvedValue(new Uint8Array(64));
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          linker_urls: [{ url: 'wss://linker.example.com:8090' }],
+          session: 'js_recovered',
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          linker_urls: [{ url: 'wss://linker.example.com:8090' }],
+          roles: { app_role: { membrane_proof: 'base64proof' } },
+          happ_bundle_url: 'https://example.com/test.happ',
+        }),
+      );
+
+      const client = JoiningClient.fromUrl(TEST_BASE_URL);
+      const result = await client.reconnectAndProvision('uhCAkAgent', signCallback);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        `${TEST_BASE_URL}/join/js_recovered/provision`,
+      );
+      expect(result.reconnect.session).toBe('js_recovered');
+      expect(result.provision?.roles).toEqual({ app_role: { membrane_proof: 'base64proof' } });
+    });
+
+    it('threads network through to reconnect and skips provision when no session token comes back', async () => {
+      const signCallback = vi.fn().mockResolvedValue(new Uint8Array(64));
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ linker_urls: [{ url: 'wss://linker.example.com:8090' }] }),
+      );
+
+      const client = JoiningClient.fromUrl(TEST_BASE_URL);
+      const result = await client.reconnectAndProvision('uhCAkAgent', signCallback, 'acme-net');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [, init] = mockFetch.mock.calls[0];
+      expect(JSON.parse(init.body as string)).toMatchObject({ network: 'acme-net' });
+      expect(result.reconnect.session).toBeUndefined();
+      expect(result.provision).toBeUndefined();
+    });
+  });
 });
 
 describe('JoinSession', () => {

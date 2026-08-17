@@ -5,7 +5,7 @@ import type { AuthMethodPlugin, JoinContext } from './auth-methods/plugin.js';
 import type { SessionStore, SessionData, ChallengeState } from './session/store.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
-import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, RoleProvision } from './types.js';
+import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
 import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
@@ -200,7 +200,8 @@ function usedHcAuthApproval(challenges: ChallengeState[]): boolean {
  * (undefined) session scope as an omitted `network` -- naming it explicitly
  * must behave exactly like omitting `network` entirely, so both spellings
  * land in one session scope instead of splitting one agent across two
- * "networks" that are really the same one.
+ * "networks" that are really the same one. Shared by join and reconnect so
+ * the collapse rule can't drift between the two call sites.
  */
 function normalizeNetwork(config: ServiceConfig, value: string | undefined): string | undefined {
   return value === config.happ.id ? undefined : value;
@@ -428,12 +429,14 @@ export function createApp(ctx: ServiceContext): Hono {
     }
     const joinContext: JoinContext = { network: networkRecord };
 
-    // Check if agent already joined
-    const existing = await ctx.sessionStore.findByAgentKey(agent_key);
+    // Check if agent already joined this network. Scoped to (agent, network)
+    // so a session on another network neither blocks this join nor gets
+    // deleted as a stale-pending session below.
+    const existing = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
     if (existing?.status === 'ready') {
       return errorJson(
         'agent_already_joined',
-        'This agent key has already completed joining. Use POST /v1/reconnect instead.',
+        'This agent key has already completed joining this network. Use POST /v1/reconnect instead.',
         409,
       );
     }
@@ -981,6 +984,26 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('invalid_agent_key', validation.reason!, 400);
     }
 
+    // Same validation join applies to `network` (src/app.ts join handler,
+    // just above): reject a non-string or malformed value outright rather
+    // than silently falling back to the static scope, which would hand back
+    // a *different* network's token than the one asked for -- worse than an
+    // error, since the caller has no way to notice. The format check also
+    // bounds `network` before it reaches a store key or an error message
+    // (unbounded input there breaks KV's key-size limit and bloats error
+    // bodies).
+    if (body.network !== undefined && typeof body.network !== 'string') {
+      return errorJson('unknown_network', 'network must be a string', 400);
+    }
+    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
+    if (requestedNetwork !== undefined && !HAPP_ID_RE.test(requestedNetwork)) {
+      return errorJson(
+        'unknown_network',
+        'network does not match the network-id format',
+        400,
+      );
+    }
+
     if (!timestamp || !signature) {
       return errorJson(
         'invalid_signature',
@@ -1010,8 +1033,9 @@ export function createApp(ctx: ServiceContext): Hono {
       );
     }
 
-    // Verify agent has joined
-    const session = await ctx.sessionStore.findByAgentKey(agent_key);
+    // Verify agent has joined -- linker/gateway URLs are service-wide, not
+    // per-network, so any ready session for this agent satisfies reconnect.
+    const session = await ctx.sessionStore.findAnyByAgentKey(agent_key);
     if (!session || session.status !== 'ready') {
       return errorJson(
         'agent_not_joined',
@@ -1059,6 +1083,30 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
+    // Network-scoped session-token lookup -- separate from the joined-at-all
+    // gate above. That gate is intentionally network-agnostic (URLs are
+    // service-wide), but the session token to hand back is per-network, so
+    // which session comes back depends on which network was requested.
+    const scopedSession = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
+    let sessionToken: string | undefined;
+    if (scopedSession?.status === 'ready') {
+      sessionToken = scopedSession.id;
+    } else if (requestedNetwork !== undefined) {
+      // A distinct (non-static) network was named and the agent has no
+      // ready session there -- point the caller at /v1/join for that
+      // network rather than silently returning URLs with no session to
+      // provision.
+      return errorJson(
+        'agent_not_joined',
+        `This agent key has not joined network "${requestedNetwork}"`,
+        403,
+      );
+    }
+    // requestedNetwork === undefined (network omitted, or explicitly named
+    // the static network): a static-scope miss is not an error here -- omit
+    // `session` and still return URLs, preserving reconnect's original
+    // contract for agents whose only session names a non-static network.
+
     // Re-register agent with linkers (idempotent — handles linker restarts)
     try {
       await notifyLinkers(ctx, agent_key);
@@ -1073,10 +1121,15 @@ export function createApp(ctx: ServiceContext): Hono {
     ]);
     const linkerUrls = toLinkerUrls(registrations);
 
-    return c.json({
+    const resp: ReconnectResponse = {
       linker_urls: linkerUrls,
       http_gateways: httpGateways,
-    });
+    };
+    if (sessionToken !== undefined) {
+      resp.session = sessionToken;
+    }
+
+    return c.json(resp);
   });
 
   return app;

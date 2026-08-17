@@ -131,12 +131,16 @@ export interface ReconnectRequest {
   agent_key: string;
   timestamp: string;
   signature: string;
+  /** Named network to reconnect to. Omitted, or equal to the static happ_id, selects the static network's session. */
+  network?: string;
 }
 
 export interface ReconnectResponse {
   /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
   http_gateways?: HttpGateway[];
+  /** Session token for the requested network's ready session. Absent when the (possibly static-defaulted) scope has no ready session. */
+  session?: string;
 }
 
 export interface ErrorResponse {

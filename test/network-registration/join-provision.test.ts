@@ -377,6 +377,43 @@ describe('network-aware join and provision', () => {
     expect((await statusRes.json()).status).toBe('pending');
   });
 
+  it('agent ready on network A can join network B; provision returns B\'s roles', async () => {
+    const agentKey = fakeAgentKey(50);
+    const { request } = await createTestApp({
+      network_registration: { admin_secret: ADMIN_SECRET },
+    });
+
+    await registerNetwork(request, {
+      happ_id: 'network-a',
+      roles: { role_a: { dna_hash: fakeDnaHash(50) } },
+    });
+    await registerNetwork(request, {
+      happ_id: 'network-b',
+      roles: { role_b: { dna_hash: fakeDnaHash(51) } },
+    });
+
+    const joinA = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, network: 'network-a' }),
+    });
+    expect(joinA.status).toBe(201);
+    expect((await joinA.json()).status).toBe('ready');
+
+    // A ready session on network A must not block joining network B.
+    const joinB = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, network: 'network-b' }),
+    });
+    expect(joinB.status).toBe(201);
+    const { session: sessionB, status: statusB } = await joinB.json();
+    expect(statusB).toBe('ready');
+
+    const prov = await (await request(`/v1/join/${sessionB}/provision`)).json();
+    expect(Object.keys(prov.roles)).toEqual(['role_b']);
+  });
+
   it('a second join on the same network still 409s', async () => {
     const agentKey = fakeAgentKey(51);
     const { request } = await createTestApp({
@@ -403,6 +440,90 @@ describe('network-aware join and provision', () => {
     });
     expect(second.status).toBe(409);
     expect((await second.json()).error.code).toBe('agent_already_joined');
+  });
+
+  it('default-scope join and a named-network join coexist for the same agent', async () => {
+    const agentKey = fakeAgentKey(52);
+    const { request } = await createTestApp({
+      network_registration: { admin_secret: ADMIN_SECRET },
+      roles: { main: { dna_hash: fakeDnaHash(53) } },
+    });
+
+    await registerNetwork(request, {
+      happ_id: 'network-a',
+      roles: { role_a: { dna_hash: fakeDnaHash(54) } },
+    });
+
+    const defaultJoin = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey }),
+    });
+    expect(defaultJoin.status).toBe(201);
+    expect((await defaultJoin.json()).status).toBe('ready');
+
+    const networkJoin = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, network: 'network-a' }),
+    });
+    expect(networkJoin.status).toBe(201);
+    const { session: networkSession, status: networkStatus } = await networkJoin.json();
+    expect(networkStatus).toBe('ready');
+
+    const prov = await (await request(`/v1/join/${networkSession}/provision`)).json();
+    expect(Object.keys(prov.roles)).toEqual(['role_a']);
+
+    // Re-joining the default scope still 409s -- both scopes are live and
+    // independently enforce their own uniqueness.
+    const secondDefaultJoin = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey }),
+    });
+    expect(secondDefaultJoin.status).toBe(409);
+  });
+
+  it('a pending session on network A survives a join on network B', async () => {
+    const agentKey = fakeAgentKey(53);
+    const { request } = await createTestApp({
+      auth_methods: ['agent_allow_list'],
+      allowed_agents: [],
+      network_registration: { admin_secret: ADMIN_SECRET },
+    });
+
+    await registerNetwork(request, {
+      happ_id: 'network-a',
+      roles: { role_a: { dna_hash: fakeDnaHash(55) } },
+      allowed_agents: [agentKey],
+    });
+    await registerNetwork(request, {
+      happ_id: 'network-b',
+      roles: { role_b: { dna_hash: fakeDnaHash(56) } },
+      allowed_agents: [agentKey],
+    });
+
+    const joinA = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, network: 'network-a' }),
+    });
+    expect(joinA.status).toBe(201);
+    const { session: sessionA, status: statusA } = await joinA.json();
+    expect(statusA).toBe('pending');
+
+    // Joining network B must not delete the still-pending session on A.
+    const joinB = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, network: 'network-b' }),
+    });
+    expect(joinB.status).toBe(201);
+    expect((await joinB.json()).status).toBe('pending');
+
+    const statusRes = await request(`/v1/join/${sessionA}/status`);
+    expect(statusRes.status).toBe(200);
+    expect((await statusRes.json()).status).toBe('pending');
   });
 
   it('joining by the service\'s own static happ id normalizes to the same session scope as a bare join', async () => {
