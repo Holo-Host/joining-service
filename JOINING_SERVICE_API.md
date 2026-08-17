@@ -277,10 +277,10 @@ The client sends its agent key and optional identity claims. The server determin
 | 400 | `unknown_network` | `network` value is not a string, does not match the network-id format, or names a network not registered with this service |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
 | 403 | `join_rejected` | `network` names a network whose `allowed_agents` is non-empty and does not include `agent_key` |
-| 409 | `agent_already_joined` | This agent key has already completed joining. Use `POST /v1/reconnect` instead. |
+| 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
 | 429 | `rate_limited` | Too many join attempts |
 
-An agent key can hold at most one session per service: joining is scoped to the agent key, not the agent-key-plus-network pair. An agent that already joined one network gets `409 agent_already_joined` if it tries to join naming a different network -- there is no per-network re-join. `POST /v1/reconnect` (Section 3.6) refreshes linker/gateway URLs for an already-joined agent; it does not return `roles` or membrane proofs, since those were already issued at the original join's provision step.
+An agent key can hold at most one live session per network: joining is scoped to the agent-key-plus-network pair (an omitted `network`, and the statically configured network's own happ id, are the same scope -- see Section 3.2). An agent that already joined one network may join a different network -- that second join is a separate session with its own roles at provision time. Re-joining a network the agent already has a live session on gets `409 agent_already_joined`; there is no re-join within the same network. `POST /v1/reconnect` (Section 3.6) refreshes linker/gateway URLs for an agent with any ready session, regardless of which network it named, and separately returns a network-scoped `session` token when the requested network has a ready session -- that token is for the same `GET /v1/join/{session}/provision` (Section 3.5) call the original join would have used, which is how an agent that crashed between receiving its session token and provisioning recovers without a second join.
 
 ---
 
@@ -443,10 +443,11 @@ Retrieve the provision data needed to connect to the Holochain network. Only ava
 
 ### 3.6 `POST /v1/reconnect` — Reconnect (Get Updated URLs)
 
-An agent that has already completed joining can request updated linker URLs and gateway URLs. This is used when:
+An agent that has already completed joining can request updated linker URLs and gateway URLs, and recover the session token for a network it has a ready session on. This is used when:
 - One or more linker URL reservations have expired (per-entry `expires_at` has passed)
 - The client has lost connectivity and needs fresh infrastructure URLs
 - The pool of available linkers or gateways has changed
+- The client completed `POST /v1/join` and received a session token, then crashed or lost the token before calling `GET /v1/join/{session}/provision` -- reconnect is how it gets back a session token to provision with, without a second join (which would 409)
 
 This endpoint does **not** re-run verification challenges. Instead, the agent proves key ownership by signing a timestamp with their ed25519 private key.
 
@@ -455,7 +456,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 {
   "agent_key": "uhCAk...",
   "timestamp": "2026-02-25T12:00:00Z",
-  "signature": "base64-encoded-ed25519-signature-of-timestamp"
+  "signature": "base64-encoded-ed25519-signature-of-timestamp",
+  "network": "my-network"
 }
 ```
 
@@ -463,7 +465,16 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 |-------|------|----------|-------------|
 | `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (same key used during join) |
 | `timestamp` | string (ISO 8601) | yes | Current UTC timestamp. Server rejects if more than 5 minutes from server time. |
-| `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key` |
+| `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key`. The signature covers only `timestamp` -- `network` selects among the agent's own already-authenticated sessions and does not need to be signed over. |
+| `network` | string | no | `happ_id` of the network whose session token to look up (same value as sent to `POST /v1/join`). Omitted, or equal to the service's own statically configured happ id, targets the static network -- both spellings are the same scope, as in Section 3.2. If present but not a string, or not matching the happ_id format, the request is rejected with 400 `unknown_network` rather than falling back to the static scope. |
+
+The linker/gateway URL refresh and the session-token lookup are checked separately:
+
+- **URL refresh** works as soon as the agent has *any* ready session on the service, regardless of which network (or no network) that session named -- linker/gateway URLs are service-wide, not per-network. This gate is what `403 agent_not_joined` below reports.
+- **Session-token lookup** is scoped to the requested network (static network if `network` was omitted):
+  - A ready session there → response includes `session`.
+  - `network` was explicitly given and names a network other than the statically configured one, and there's no ready session there → `403 agent_not_joined`, naming that network, instead of a 200 with no `session`. This is the caller's signal to `POST /v1/join` that network instead.
+  - `network` was omitted, or explicitly given as the statically configured happ id (the two are the same scope), and the static network has no ready session → `session` is simply absent from an otherwise-normal `200` response; this is not an error (an agent whose only session names a non-static network still gets its URL refresh).
 
 **Response** (`200 OK`):
 ```json
@@ -478,7 +489,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
       "dna_hashes": ["uhC0k..."],
       "status": "available"
     }
-  ]
+  ],
+  "session": "js_a1b2c3d4e5f6"
 }
 ```
 
@@ -486,6 +498,7 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 |-------|------|----------|-------------|
 | `linker_urls` | LinkerUrl[] | no | Updated ordered list of linker URL entries. Absent when the service does not manage linker relay URLs. Each entry may carry its own `expires_at`. |
 | `http_gateways` | array | no | Current read-only gateway instances (same schema as `/v1/info`). Each entry may carry its own `expires_at`. |
+| `session` | string | no | Session token for the requested network's ready session (see the three-case behavior above). Pass it to `GET /v1/join/{session}/provision` (Section 3.5) exactly as with a fresh join. Absent when the requested scope has no ready session and `network` was omitted. |
 
 **Errors**:
 
@@ -494,7 +507,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
 | 400 | `invalid_signature` | Signature does not verify against agent key |
 | 400 | `timestamp_out_of_range` | Timestamp is more than 5 minutes from server time |
-| 403 | `agent_not_joined` | This agent key has not completed joining |
+| 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
+| 403 | `agent_not_joined` | This agent key has no ready session at all, or `network` was explicitly given as a network other than the static one and has no ready session there |
 | 403 | `agent_revoked` | Agent was blocked by administrator (hc_auth_approval revocation) |
 | 429 | `rate_limited` | Too many reconnect attempts |
 
@@ -1463,12 +1477,16 @@ interface ReconnectRequest {
   agent_key: string;
   timestamp: string;
   signature: string;
+  /** Named network to reconnect to. Omitted, or equal to the static happ_id, selects the static network's session. */
+  network?: string;
 }
 
 interface ReconnectResponse {
   /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
   http_gateways?: HttpGateway[];
+  /** Session token for the requested network's ready session. Absent when the (possibly static-defaulted) scope has no ready session. */
+  session?: string;
 }
 
 // --- Errors ---

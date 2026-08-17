@@ -456,25 +456,26 @@ graph TB
 
 ## Reconnect Flow
 
-Separate from joining. For agents that have already joined but need fresh linker URLs (e.g., after URL expiration or network reconnection).
+Separate from joining. For agents that have already joined but need fresh linker URLs (e.g., after URL expiration or network reconnection), and for an agent that joined and crashed before provisioning -- reconnect hands back that network's session token so it can call `/provision` without a second, 409-rejected join.
 
 ```mermaid
 sequenceDiagram
     participant Agent as Browser Extension
     participant JS as Joining Service
 
-    Note over Agent: Previously joined,<br/>linker URL expired
+    Note over Agent: Previously joined,<br/>linker URL expired or<br/>provision never completed
 
     Agent->>Agent: Generate ISO 8601 timestamp
     Agent->>Agent: Sign timestamp with agent's Ed25519 key
 
-    Agent->>JS: POST /v1/reconnect<br/>{agent_key, timestamp, signature}
+    Agent->>JS: POST /v1/reconnect<br/>{agent_key, timestamp, signature, network?}
 
     JS->>JS: Verify Ed25519 signature
     JS->>JS: Check timestamp within tolerance (default 5 min)
-    JS-->>Agent: {linker_urls, http_gateways}
+    JS->>JS: Look up ready session scoped to network
+    JS-->>Agent: {linker_urls, http_gateways, session?}
 
-    Note over Agent: Reconnect to new linker URL
+    Note over Agent: Reconnect to new linker URL,<br/>or call /provision if session came back
 ```
 
-No re-authentication required. The agent proves identity by signing a timestamp with their agent key.
+No re-authentication required. The agent proves identity by signing a timestamp with their agent key; `network` is unsigned since it only selects among that agent's own already-authenticated sessions.
