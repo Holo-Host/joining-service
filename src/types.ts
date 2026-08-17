@@ -1,4 +1,4 @@
-// API types matching JOINING_SERVICE_API.md Section 9
+// API types matching JOINING_SERVICE_API.md Section 10
 
 export interface WellKnownHoloJoining {
   joining_service_url: string;
