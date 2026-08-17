@@ -9,17 +9,15 @@ import { createApp, type ServiceContext } from '../../src/app.js';
 import { resolveConfig, type ServiceConfig } from '../../src/config.js';
 import { KvSessionStore } from '../../src/session/kv-store.js';
 import { KvUrlProvider } from '../../src/urls/kv.js';
-import { OpenAuthMethod } from '../../src/auth-methods/open.js';
-import { EmailCodeAuthMethod } from '../../src/auth-methods/email-code.js';
-import { InviteCodeAuthMethod } from '../../src/auth-methods/invite-code.js';
-import { HcAuthApprovalMethod } from '../../src/auth-methods/hc-auth-approval.js';
 import { PostmarkTransport } from '../../src/email/postmark.js';
 import { SendGridTransport } from '../../src/email/sendgrid.js';
 import { HcAuthClient } from '../../src/hc-auth/index.js';
 import type { MembraneProofGenerator } from '../../src/membrane-proof/generator.js';
-import type { AuthMethodPlugin } from '../../src/auth-methods/plugin.js';
 import type { EmailTransport } from '../../src/email/transport.js';
-import type { AuthMethod, AuthMethodEntry } from '../../src/types.js';
+import { buildAuthPlugins, flattenMethods } from '../../src/auth-plugins.js';
+import { KvAllowedAgentStore } from '../../src/agent-registration/kv-store.js';
+import { KvNetworkStore } from '../../src/network-registration/kv-store.js';
+import { LinkerRegistrationStore } from '../../src/linker-registration/store.js';
 
 interface Env {
   SESSIONS: KVNamespace;
@@ -48,77 +46,6 @@ function buildEmailTransport(config: ServiceConfig): EmailTransport | null {
   return null;
 }
 
-/** Flatten AuthMethodEntry[] into unique AuthMethod names for plugin init. */
-function flattenMethods(entries: AuthMethodEntry[]): AuthMethod[] {
-  const seen = new Set<AuthMethod>();
-  for (const entry of entries) {
-    if (typeof entry === 'object' && 'any_of' in entry) {
-      for (const m of entry.any_of) seen.add(m);
-    } else {
-      seen.add(entry);
-    }
-  }
-  return [...seen];
-}
-
-function buildAuthPlugins(
-  config: ServiceConfig,
-  emailTransport: EmailTransport | null,
-  hcAuthClient?: HcAuthClient,
-): Map<string, AuthMethodPlugin> {
-  const plugins = new Map<string, AuthMethodPlugin>();
-
-  for (const method of flattenMethods(config.auth_methods)) {
-    switch (method) {
-      case 'open':
-        plugins.set('open', new OpenAuthMethod());
-        break;
-
-      case 'email_code':
-        if (!emailTransport) {
-          throw new Error(
-            'email_code auth requires email config with postmark provider',
-          );
-        }
-        plugins.set(
-          'email_code',
-          new EmailCodeAuthMethod({
-            transport: emailTransport,
-            subject: config.email?.template
-              ? undefined
-              : 'Your verification code',
-            template: config.email?.template,
-          }),
-        );
-        break;
-
-      case 'invite_code':
-        plugins.set(
-          'invite_code',
-          new InviteCodeAuthMethod(config.invite_codes ?? []),
-        );
-        break;
-
-      case 'hc_auth_approval':
-        if (!hcAuthClient) {
-          throw new Error(
-            'hc_auth_approval auth method requires hc_auth config',
-          );
-        }
-        plugins.set(
-          'hc_auth_approval',
-          new HcAuthApprovalMethod(hcAuthClient),
-        );
-        break;
-
-      default:
-        console.warn(`Unknown auth method: ${method}, skipping`);
-    }
-  }
-
-  return plugins;
-}
-
 async function buildProofGenerator(
   signingKeyHex?: string,
 ): Promise<MembraneProofGenerator | undefined> {
@@ -144,14 +71,34 @@ export default {
       config.session?.pending_ttl_seconds ?? 86400,
     );
 
-    const urlProvider = new KvUrlProvider(env.SESSIONS);
-
     const hcAuthClient = config.hc_auth
       ? new HcAuthClient(config.hc_auth)
       : undefined;
 
+    // Same gating as the Node entry point (src/server.ts): these stores back
+    // the dynamic-registration admin surfaces, which are dead weight (and
+    // cost nothing) when their auth method/admin_secret isn't configured.
+    const enabledMethods = flattenMethods(config.auth_methods);
+
+    const allowedAgentStore =
+      enabledMethods.includes('agent_allow_list') || config.agent_registration
+        ? new KvAllowedAgentStore(env.SESSIONS)
+        : undefined;
+
+    const networkStore = config.network_registration
+      ? new KvNetworkStore(env.SESSIONS)
+      : undefined;
+
+    const linkerRegistrationStore = config.linker_auth?.admin_secret
+      ? new LinkerRegistrationStore(env.SESSIONS)
+      : undefined;
+
+    // Merges dynamically registered linkers into URL provisioning alongside
+    // the statically configured ones.
+    const urlProvider = new KvUrlProvider(env.SESSIONS, linkerRegistrationStore);
+
     const emailTransport = buildEmailTransport(config);
-    const authPlugins = buildAuthPlugins(config, emailTransport, hcAuthClient);
+    const authPlugins = buildAuthPlugins(config, { emailTransport, hcAuthClient, allowedAgentStore });
 
     let proofGenerator: MembraneProofGenerator | undefined;
     if (config.membrane_proof?.enabled) {
@@ -165,6 +112,9 @@ export default {
       proofGenerator,
       urlProvider,
       hcAuthClient,
+      allowedAgentStore,
+      networkStore,
+      linkerRegistrationStore,
     };
 
     const app = createApp(context);
