@@ -29,7 +29,7 @@ beforeEach(() => {
 
 describe('HcAuthClient.requestAuth', () => {
   it('sends PUT /request-auth/{key} with metadata', async () => {
-    const spy = mockFetch([{ status: 202 }]);
+    const spy = mockFetch([{ status: 200 }]);
     const client = makeClient();
     await client.requestAuth('abc123', { agent: 'test' });
 
@@ -40,14 +40,40 @@ describe('HcAuthClient.requestAuth', () => {
     expect(JSON.parse(init.body as string)).toEqual({ agent: 'test' });
   });
 
-  it('treats 429 (already pending) as success', async () => {
-    mockFetch([{ status: 429 }]);
-    await expect(makeClient().requestAuth('abc123', {})).resolves.toBeUndefined();
-  });
-
   it('throws on other error status', async () => {
     mockFetch([{ status: 400, body: 'bad request' }]);
     await expect(makeClient().requestAuth('abc123', {})).rejects.toThrow('400');
+  });
+
+  // hc-auth-server's PUT /request-auth returns 200 on success (not 202), 429
+  // when the pending-request limit is hit and nothing was stored, 500 when the
+  // key already has a record, and 401 for an invalid pubkey. See issue #15.
+
+  it('resolves on 200 (registered)', async () => {
+    mockFetch([{ status: 200 }]);
+    await expect(makeClient().requestAuth('abc123', {})).resolves.toBeUndefined();
+  });
+
+  it('throws on 429, naming the pending-request limit as the cause', async () => {
+    mockFetch([{ status: 429, body: 'too many requests' }]);
+    await expect(makeClient().requestAuth('abc123', {})).rejects.toThrow(
+      /pending-request limit/i,
+    );
+  });
+
+  it('resolves on 500 (key already has a record) so the transition can proceed', async () => {
+    mockFetch([{ status: 500, body: 'storage failure: already_exists' }]);
+    await expect(makeClient().requestAuth('abc123', {})).resolves.toBeUndefined();
+  });
+
+  it('resolves on 409 (already registered) once hc-auth-server maps the conflict', async () => {
+    mockFetch([{ status: 409, body: 'already exists' }]);
+    await expect(makeClient().requestAuth('abc123', {})).resolves.toBeUndefined();
+  });
+
+  it('throws on 401 (invalid pubkey)', async () => {
+    mockFetch([{ status: 401, body: 'unauthorized' }]);
+    await expect(makeClient().requestAuth('abc123', {})).rejects.toThrow('401');
   });
 });
 
@@ -121,7 +147,7 @@ describe('HcAuthClient.registerAndAuthorize', () => {
   it('registers then authorizes when key is not found', async () => {
     const spy = mockFetch([
       { status: 404 },    // getRecord → not found
-      { status: 202 },    // requestAuth
+      { status: 200 },    // requestAuth
       { status: 200 },    // transition pending→authorized
     ]);
     await makeClient().registerAndAuthorize('abc123', { happ_id: 'test' });
