@@ -292,7 +292,10 @@ export class JoiningFlow extends LitElement {
 
   protected handleError(e: unknown) {
     const error = e instanceof Error ? e : new Error(String(e));
-    this.flowStatus = 'error';
+    this.flowStatus =
+      error instanceof JoiningError && error.code === 'join_rejected'
+        ? 'rejected'
+        : 'error';
     this.statusReason = error.message;
     this.dispatchEvent(
       new CustomEvent<JoinErrorDetail>('join-error', {

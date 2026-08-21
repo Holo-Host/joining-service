@@ -83,9 +83,8 @@ export interface JoinRequest {
 
 export interface JoinResponse {
   session: string;
-  status: 'ready' | 'pending' | 'rejected';
+  status: 'ready' | 'pending';
   challenges?: Challenge[];
-  reason?: string;
   poll_interval_ms?: number;
 }
 
@@ -108,6 +107,13 @@ export interface VerifyRequest {
 export interface VerifyResponse {
   status: 'ready' | 'pending' | 'rejected';
   challenges_remaining?: Challenge[];
+  reason?: string;
+  poll_interval_ms?: number;
+}
+
+export interface StatusResponse {
+  status: 'ready' | 'pending' | 'rejected';
+  challenges?: Challenge[];
   reason?: string;
   poll_interval_ms?: number;
 }

@@ -39,10 +39,9 @@ describe('Invite code flow', () => {
       }),
     });
 
-    expect(joinRes.status).toBe(201);
+    expect(joinRes.status).toBe(403);
     const body = await joinRes.json();
-    expect(body.status).toBe('rejected');
-    expect(body.reason).toContain('Invalid');
+    expect(body.error.code).toBe('join_rejected');
   });
 
   it('invite code is single-use', async () => {
@@ -71,7 +70,8 @@ describe('Invite code flow', () => {
         claims: { invite_code: 'SINGLE-USE' },
       }),
     });
-    expect((await res2.json()).status).toBe('rejected');
+    expect(res2.status).toBe(403);
+    expect((await res2.json()).error.code).toBe('join_rejected');
   });
 
   it('missing invite_code claim returns 400', async () => {

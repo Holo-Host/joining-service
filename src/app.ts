@@ -43,6 +43,20 @@ export interface ServiceContext {
   networkStore?: NetworkStore;
 }
 
+/**
+ * A required downstream service (currently hc-auth) was unreachable or
+ * errored. Mapped to 503 `service_unavailable` by the error handler, so a
+ * caller can tell "we could not reach our auth service" from "your
+ * credentials were rejected" -- the two need very different responses, and a
+ * bare 500 conflates them.
+ */
+class ServiceUnavailableError extends Error {
+  constructor(message: string, readonly reason?: unknown) {
+    super(message);
+    this.name = 'ServiceUnavailableError';
+  }
+}
+
 async function notifyHcAuth(
   ctx: ServiceContext,
   agentKey: string,
@@ -68,7 +82,12 @@ async function notifyHcAuth(
   try {
     await ctx.hcAuthClient.registerAndAuthorize(rawKey, metadata);
   } catch (err) {
-    if (ctx.config.hc_auth?.required) throw err;
+    if (ctx.config.hc_auth?.required) {
+      // The agent's own credentials were fine -- this is our downstream
+      // registration failing after that point. Tagged so it does not surface
+      // as an indistinguishable 500.
+      throw new ServiceUnavailableError('Auth service registration failed', err);
+    }
     console.error('[hc-auth] registerAndAuthorize failed (non-fatal):', err);
   }
 }
@@ -304,6 +323,19 @@ function errorJson(code: string, message: string, status: number) {
 
 export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
+
+  // Without this, any throw escaping a handler becomes Hono's default bare
+  // `Internal Server Error` text body -- no code for a client to branch on,
+  // and no way to tell a rejected credential from a downstream failure that
+  // happened *after* the caller was successfully verified.
+  app.onError((err, c) => {
+    if (err instanceof ServiceUnavailableError) {
+      console.error(`[service_unavailable] ${err.message}:`, err.reason);
+      return errorJson('service_unavailable', err.message, 503);
+    }
+    console.error('[unhandled] request failed:', err);
+    return errorJson('internal_error', 'Internal server error', 500);
+  });
 
   app.use('*', cors());
 
@@ -560,14 +592,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
         // If no method in the OR group produced challenges, the group is unsatisfiable
         if (!groupHasChallenges) {
-          return c.json(
-            {
-              session: sessionId,
-              status: 'rejected' as const,
-              reason: 'No eligible auth method in group',
-            },
-            201,
-          );
+          return errorJson('join_rejected', 'No eligible auth method in group', 403);
         }
       } else {
         // AND: standalone method
@@ -583,14 +608,7 @@ export function createApp(ctx: ServiceContext): Hono {
           );
           if (challenges.length === 0 && entry !== 'open' && entry !== 'hc_auth_approval') {
             // Non-open/non-hc_auth_approval method produced no challenges -- agent is not eligible
-            return c.json(
-              {
-                session: sessionId,
-                status: 'rejected' as const,
-                reason: 'Agent is not eligible for this auth method',
-              },
-              201,
-            );
+            return errorJson('join_rejected', 'Agent is not eligible for this auth method', 403);
           }
           for (const ch of challenges) {
             allChallenges.push({
@@ -624,14 +642,7 @@ export function createApp(ctx: ServiceContext): Hono {
               claims,
             );
             if (!result.passed) {
-              return c.json(
-                {
-                  session: sessionId,
-                  status: 'rejected' as const,
-                  reason: result.reason ?? 'Invalid invite code',
-                },
-                201,
-              );
+              return errorJson('join_rejected', result.reason ?? 'Invalid invite code', 403);
             }
             cs.completed = true;
           }

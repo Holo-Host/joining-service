@@ -27,10 +27,13 @@ describe('E2E: Invite code flow', () => {
 
   it('join with invalid invite code returns rejected', async () => {
     const agentKey = fakeAgentKey(21);
-    const session = await client.join(agentKey, { invite_code: 'WRONG-CODE' });
-
-    expect(session.status).toBe('rejected');
-    expect(session.reason).toBeTruthy();
+    try {
+      await client.join(agentKey, { invite_code: 'WRONG-CODE' });
+      throw new Error('Should have thrown JoiningError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(JoiningError);
+      expect((err as JoiningError).code).toBe('join_rejected');
+    }
   });
 
   it('provision available after valid invite join', async () => {

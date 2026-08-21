@@ -13,6 +13,7 @@ import type {
   ReconnectResponse,
   JoinResponse,
   VerifyResponse,
+  StatusResponse,
   ErrorResponse,
 } from '../types.js';
 
@@ -98,7 +99,7 @@ export class JoinSession {
       await throwJoiningError(res);
     }
 
-    const body = await res.json() as JoinResponse;
+    const body = await res.json() as StatusResponse;
     return new JoinSession(
       this.baseUrl,
       this.sessionToken,
@@ -229,7 +230,10 @@ export class JoiningClient {
       data.session,
       data.status,
       data.challenges,
-      data.reason,
+      // A join is never created in the "rejected" state — rejection surfaces as
+      // a thrown JoiningError (403 join_rejected) above. Only pollStatus() can
+      // observe a rejection reason, on a session rejected after creation.
+      undefined,
       data.poll_interval_ms,
     );
   }

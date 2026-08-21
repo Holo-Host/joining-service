@@ -78,9 +78,10 @@ describe('Agent allow list flow', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_key: agentKey }),
     });
-    expect(joinRes.status).toBe(201);
+    expect(joinRes.status).toBe(403);
     const body = await joinRes.json();
-    expect(body.status).toBe('rejected');
+    expect(body.error.code).toBe('join_rejected');
+    expect(body.error.message).toBe('Agent is not eligible for this auth method');
   });
 
   it('bad signature fails verification', async () => {
