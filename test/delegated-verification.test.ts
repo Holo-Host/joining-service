@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { createTestApp, fakeAgentKey } from './helpers.js';
+import { createTestApp, fakeAgentKey, fakeDnaHash } from './helpers.js';
 import { resetRateLimitState } from '../src/auth-methods/delegated-verification.js';
 import type { DelegatedVerificationConfig } from '../src/auth-methods/delegated-verification.js';
 
@@ -385,7 +385,7 @@ describe('Delegated verification flow', () => {
       auth_methods: ['delegated_verification'],
       delegated_verification: delegatedConfig,
       membrane_proof: { enabled: true },
-      dna_hashes: ['uhC0k' + 'A'.repeat(48)], // need a valid-ish hash
+      roles: { app_role: { dna_hash: fakeDnaHash(20) } },
     });
 
     // Can't easily test with a real hash, but we can check provision returns proofs

@@ -151,33 +151,46 @@ async function handleAllowListChallenge(
  * Convert a JoinProvision response to roles-settings YAML format
  * for `hc s call install-app --roles-settings`.
  *
- * When membrane_proofs keys are role names (from role-keyed dna_hashes config),
- * they map directly to YAML role entries. When they are DNA hashes,
- * they are output as-is — the caller is responsible for mapping them to roles.
+ * Uses the per-role data (roles field with individual modifiers per role).
  */
 export function provisionToRolesSettingsYaml(
   prov: JoinProvision,
 ): string {
-  if (!prov.membrane_proofs || Object.keys(prov.membrane_proofs).length === 0) {
+  // Only roles that actually carry something to provision (a proof or
+  // non-empty modifiers) get an entry — a role with neither has nothing
+  // distinguishing it, so it falls through to the "no membrane proofs" case
+  // rather than emitting a bare stub entry.
+  const roleEntries = prov.roles
+    ? Object.entries(prov.roles).filter(
+        ([, rp]) =>
+          rp.membrane_proof ||
+          (rp.dna_modifiers && (rp.dna_modifiers.network_seed || rp.dna_modifiers.properties)),
+      )
+    : [];
+  if (roleEntries.length === 0) {
     return '# No membrane proofs returned by joining service\n';
   }
 
   const lines: string[] = [];
-  for (const [key, proofBase64] of Object.entries(prov.membrane_proofs)) {
-    lines.push(`"${key}":`);
+  for (const [role, rp] of roleEntries) {
+    lines.push(`"${role}":`);
     lines.push(`  type: provisioned`);
-    lines.push(`  membrane_proof: "${proofBase64}"`);
-    if (prov.dna_modifiers) {
+    if (rp.membrane_proof) {
+      lines.push(`  membrane_proof: "${rp.membrane_proof}"`);
+    }
+    const modifierLines: string[] = [];
+    if (rp.dna_modifiers?.network_seed) {
+      modifierLines.push(`    network_seed: "${rp.dna_modifiers.network_seed}"`);
+    }
+    if (rp.dna_modifiers?.properties) {
+      // Single-quoted to prevent YAML misparse of JSON metacharacters.
+      // Limitation: if a property value contains a literal single quote,
+      // the YAML will be malformed. Use a proper YAML library if that arises.
+      modifierLines.push(`    properties: '${JSON.stringify(rp.dna_modifiers.properties)}'`);
+    }
+    if (modifierLines.length > 0) {
       lines.push(`  modifiers:`);
-      if (prov.dna_modifiers.network_seed) {
-        lines.push(`    network_seed: "${prov.dna_modifiers.network_seed}"`);
-      }
-      if (prov.dna_modifiers.properties) {
-        // Single-quoted to prevent YAML misparse of JSON metacharacters.
-        // Limitation: if a property value contains a literal single quote,
-        // the YAML will be malformed. Use a proper YAML library if that arises.
-        lines.push(`    properties: '${JSON.stringify(prov.dna_modifiers.properties)}'`);
-      }
+      lines.push(...modifierLines);
     }
   }
   return lines.join('\n') + '\n';

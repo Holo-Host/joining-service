@@ -21,9 +21,9 @@ export interface JoiningServiceInfo {
     region_hints?: string[];
   };
   happ_bundle_url?: string;
-  dna_modifiers?: DnaModifiers;
   /** Network service URLs. Only present when reveal_in_info is enabled in config. */
   network_config?: NetworkConfig;
+  roles?: Record<string, { dna_modifiers?: DnaModifiers }>;
 }
 
 export interface HttpGateway {
@@ -65,6 +65,13 @@ export type AuthMethodEntry = AuthMethod | AuthMethodGroup;
 export interface DnaModifiers {
   network_seed?: string;
   properties?: Record<string, unknown>;
+}
+
+/** Per-role provision data, mirroring hc roles-settings. */
+export interface RoleProvision {
+  /** Base64 membrane proof for this role's DNA. */
+  membrane_proof?: string;
+  dna_modifiers?: DnaModifiers;
 }
 
 export interface JoinRequest {
@@ -118,11 +125,10 @@ export interface NetworkConfig {
 export interface JoinProvision {
   /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
-  membrane_proofs?: Record<string, string>;
   happ_bundle_url?: string;
-  dna_modifiers?: DnaModifiers;
   /** Network service URLs for conductor configuration. Only present when at least one URL is available. */
   network_config?: NetworkConfig;
+  roles?: Record<string, RoleProvision>;
 }
 
 export interface ReconnectRequest {

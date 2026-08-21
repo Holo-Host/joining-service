@@ -5,7 +5,7 @@ import type { AuthMethodPlugin } from './auth-methods/plugin.js';
 import type { SessionStore, ChallengeState } from './session/store.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
-import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl } from './types.js';
+import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, RoleProvision } from './types.js';
 import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
@@ -283,9 +283,16 @@ export function createApp(ctx: ServiceContext): Hono {
         ? (config.linker_info ?? { selection_mode: 'assigned' })
         : undefined,
       happ_bundle_url: config.happ.happ_bundle_url,
-      dna_modifiers: config.dna_modifiers,
       network_config: config.network?.reveal_in_info
         ? buildNetworkConfig(config)
+        : undefined,
+      roles: config.roles
+        ? Object.fromEntries(
+            Object.entries(config.roles).map(([role, rc]) => [
+              role,
+              { dna_modifiers: rc.modifiers },
+            ]),
+          )
         : undefined,
     });
   });
@@ -736,30 +743,27 @@ export function createApp(ctx: ServiceContext): Hono {
 
     const linkerUrls = toLinkerUrls(await ctx.urlProvider.getLinkerRegistrations());
 
-    let membraneProofs: Record<string, string> | undefined;
-    const dnaHashesCfg = ctx.config.dna_hashes;
-    if (ctx.proofGenerator && dnaHashesCfg) {
-      // Normalise: role-keyed Record or flat array
-      const isRoleKeyed = !Array.isArray(dnaHashesCfg);
-      const hashList = isRoleKeyed ? Object.values(dnaHashesCfg) : dnaHashesCfg;
-      if (hashList.length > 0) {
-        const rawProofs = await ctx.proofGenerator.generate(
-          session.agent_key,
-          hashList,
-        );
-        membraneProofs = {};
-        if (isRoleKeyed) {
-          // Key proofs by role name
-          for (const [role, hash] of Object.entries(dnaHashesCfg)) {
-            if (rawProofs[hash]) {
-              membraneProofs[role] = toBase64(rawProofs[hash]);
-            }
-          }
-        } else {
-          for (const [hash, proof] of Object.entries(rawProofs)) {
-            membraneProofs[hash] = toBase64(proof);
-          }
-        }
+    let rolesOut: Record<string, RoleProvision> | undefined;
+    const rolesCfg = ctx.config.roles;
+    if (rolesCfg && Object.keys(rolesCfg).length > 0) {
+      let proofsByHash: Record<string, Uint8Array> = {};
+      if (ctx.proofGenerator) {
+        const hashes = [
+          ...new Set(
+            Object.values(rolesCfg)
+              .map((r) => r.dna_hash)
+              .filter((hash): hash is string => hash !== undefined),
+          ),
+        ];
+        proofsByHash = await ctx.proofGenerator.generate(session.agent_key, hashes);
+      }
+      rolesOut = {};
+      for (const [role, rc] of Object.entries(rolesCfg)) {
+        const proof = rc.dna_hash ? proofsByHash[rc.dna_hash] : undefined;
+        rolesOut[role] = {
+          membrane_proof: proof ? toBase64(proof) : undefined,
+          dna_modifiers: rc.modifiers,
+        };
       }
     }
 
@@ -768,10 +772,9 @@ export function createApp(ctx: ServiceContext): Hono {
 
     return c.json({
       linker_urls: linkerUrls,
-      membrane_proofs: membraneProofs,
       happ_bundle_url: ctx.config.happ.happ_bundle_url,
-      dna_modifiers: ctx.config.dna_modifiers,
       network_config: networkConfig,
+      roles: rolesOut,
     });
   });
 

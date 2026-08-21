@@ -57,7 +57,7 @@ other-role:
   membrane_proof: "base64-encoded-proof..."
 ```
 
-Role names in the output come from the joining service config. The service operator must configure `dna_hashes` as a role-name-keyed object (see [Service Configuration](#service-configuration)).
+Role names in the output come from the joining service config. The service operator should configure `roles` with per-role DNA hashes and modifiers (see [Service Configuration](#service-configuration)).
 
 ---
 
@@ -139,18 +139,24 @@ joining-cli hc-auth register [options]
 
 ## Service Configuration
 
-For the CLI to output role-keyed YAML, the joining service must be configured with `dna_hashes` as a `Record<role_name, dna_hash>` instead of a flat array:
+For the CLI to output role-keyed YAML, the joining service must be configured with `roles`:
 
 ```json
 {
-  "dna_hashes": {
-    "my-role": "uhC0k...",
-    "other-role": "uhC0k..."
+  "roles": {
+    "my-role": {
+      "dna_hash": "uhC0k...",
+      "modifiers": {
+        "network_seed": "my-network",
+        "properties": { "progenitor_pubkey": "uhCAk..." }
+      }
+    },
+    "other-role": {
+      "dna_hash": "uhC0k..."
+    }
   }
 }
 ```
-
-The flat `string[]` format still works but proofs will be keyed by DNA hash, requiring manual mapping to role names.
 
 ---
 
