@@ -15,6 +15,7 @@ export { SqliteSessionStore } from './session/sqlite-store.js';
 export { KvSessionStore } from './session/kv-store.js';
 
 // Auth plugins
+export { buildAuthPlugins, flattenMethods, type AuthPluginDeps } from './auth-plugins.js';
 export type { AuthMethodPlugin } from './auth-methods/plugin.js';
 export { OpenAuthMethod } from './auth-methods/open.js';
 export { EmailCodeAuthMethod } from './auth-methods/email-code.js';

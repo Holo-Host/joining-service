@@ -29,6 +29,11 @@ Reconnect (linker URLs expired or infrastructure changed):
   11. POST /v1/reconnect { agent_key, timestamp, signature }
       → updated linker URLs, gateway URLs
   12. Client reconnects to new linker URLs
+
+Recovery (joined, then crashed before installing):
+  13. POST /v1/reconnect { agent_key, timestamp, signature, network }
+      → session token, plus updated URLs
+  14. GET /v1/join/{session}/provision → install as in step 9
 ```
 
 ---
@@ -136,7 +141,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 | `http_gateways[].dna_hashes` | string[] | yes | Base64-encoded DNA hashes served by this gateway |
 | `http_gateways[].status` | string | yes | `"available"`, `"degraded"`, or `"offline"` |
 | `http_gateways[].expires_at` | string (ISO 8601) | no | When this gateway entry expires. Absent means no known expiry. |
-| `auth_methods` | AuthMethodEntry[] | yes | Supported authentication methods (see Section 7). Each entry is either an `AuthMethod` string or an `{ any_of: AuthMethod[] }` group. Top-level entries are AND'd; methods within an `any_of` group are OR'd. |
+| `auth_methods` | AuthMethodEntry[] | yes | Supported authentication methods (see Section 8). Each entry is either an `AuthMethod` string or an `{ any_of: AuthMethod[] }` group. Top-level entries are AND'd; methods within an `any_of` group are OR'd. |
 | `linker_info` | object | no | Absent when the service does not manage linker relay URLs (e.g. pure membrane-proof or gateway-only deployments) |
 | `linker_info.selection_mode` | string | if linker_info present | `"assigned"` (server picks linker) or `"client_choice"` (client picks from list) |
 | `linker_info.region_hints` | string[] | no | Available regions for latency optimization |
@@ -644,7 +649,7 @@ The admin routes (`POST /v1/admin/allowed-agents`, `GET /v1/admin/allowed-agents
 **Store Backend**: Registered agents are persisted using the same backend as the session store (`session.store` config):
 - `memory` — agents are lost on server restart (ephemeral; suitable for development)
 - `sqlite` — agents are persisted to disk in `allowed-agents.db` (same directory as `sessions.db`). Note: this file is created whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — it backs the static `allowed_agents` list's lookups too.
-- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box.
+- `cloudflare-kv` — works out of the box. The bundled worker entry constructs a `KvAllowedAgentStore` against the `SESSIONS` KV binding whenever `agent_allow_list` is in `auth_methods` or `agent_registration` is configured.
 
 ---
 
@@ -839,7 +844,7 @@ The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/netwo
 **Store Backend**: Registered networks are persisted using the same backend as the session store (`session.store` config):
 - `memory` — networks are lost on server restart (ephemeral; suitable for development)
 - `sqlite` — networks are persisted to disk in `networks.db` (same directory as `sessions.db`)
-- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvNetworkStore` and pass it as `networkStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box. Note: KV's eventual consistency means two concurrent registrations of the same `happ_id` may race; the last write wins. The cross-network `dna_hash` uniqueness check (Section 3.11) is best-effort on this backend for the same reason: it lists all networks via a non-paginated KV `list()` under eventual consistency, so a duplicate registered moments earlier, or one from a list page not yet visible, can slip through undetected.
+- `cloudflare-kv` — works out of the box. The bundled worker entry constructs a `KvNetworkStore` against the `SESSIONS` KV binding whenever `network_registration` is configured. Note: KV's eventual consistency means two concurrent registrations of the same `happ_id` may race; the last write wins. The cross-network `dna_hash` uniqueness check (Section 3.11) is best-effort on this backend for the same reason: it lists all networks via a non-paginated KV `list()` under eventual consistency, so a duplicate registered moments earlier, or one from a list page not yet visible, can slip through undetected.
 
 **One-Call Pipeline Registration**: A key use case is network provisioning pipelines: a network is registered with its progenitor agent in `allowed_agents`, and the progenitor immediately joins with `"network": "<happ_id>"`. The registration and join do not require config edits or service restart — they are independent API calls that, in sequence, form a complete onboarding path. Setting `allowed_agents` to the progenitor's key is what makes this safe to run against a service configured with `open` or `email_code` auth: without it, any agent naming the network would receive its membrane proofs, not just the progenitor the pipeline registered.
 
@@ -847,7 +852,47 @@ The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/netwo
 
 ---
 
-## 4. Error Response Format
+## 4. Client Integration
+
+Sections 2 and 3 define each endpoint on its own. This section covers the part a client has to work out for itself: given the state of the machine it is starting on, which endpoint to call.
+
+### 4.1 Startup Decision Tree
+
+Two pieces of purely local state decide which endpoint to call: whether an agent key exists, and whether the hApp is installed. Neither requires a server round trip to determine.
+
+**hApp installed.** Normal startup; there is nothing to join. A client that wants current infrastructure URLs — because a `linker_urls` entry's `expires_at` has passed, or a connection attempt failed — calls `POST /v1/reconnect` (Section 3.6) for them.
+
+**No agent key.** Generate one on the conductor's admin interface (`generateAgentPubKey`), record the association described in Section 4.2, then `POST /v1/join` (Section 3.2). There is nothing to recover.
+
+**Agent key present, hApp not installed.** This covers both an install that was interrupted after joining and a genuine first run that has only got as far as generating a key. The client does not have to tell them apart: call `POST /v1/reconnect` with the `network` it intends to install, and branch on the response.
+
+| Response | Meaning | Next call |
+|----------|---------|-----------|
+| `200` with `session` | The agent has a ready session on the requested network | `GET /v1/join/{session}/provision` (Section 3.5), then install |
+| `200` without `session` | `network` was omitted or named the statically configured network, and that scope has no ready session | `POST /v1/join` |
+| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join` |
+
+The provision call is the same one a fresh join would make, and it is repeatable: on the success path it writes no session state and mints a fresh membrane proof with a new nonce and timestamp per call. A client that crashes again partway through installing can call it again with the same token.
+
+#### Why reconnect goes first
+
+Not to avoid wasted work on the server. `POST /v1/join` returns `409 agent_already_joined` before it issues a challenge or sends any email, so trying join first and falling back to reconnect costs a round trip and nothing else. Both orders are safe: join's 409 returns before any challenge or email, and reconnect's only server-side effect is an idempotent re-registration with the linkers.
+
+The reason is what each request needs from the caller. Reconnect needs an agent key and a signature over a timestamp, both of which the client produces on its own. Join may need claims — an email address, an invite code, a partner attestation — and, depending on the service's configured `auth_methods`, a prompt someone has to answer. Reconnect-first means an interrupted install completes silently, and an auth flow reaches the user only when the agent genuinely has to join something new.
+
+Signing works in this state. The agent key is in lair from the moment `generateAgentPubKey` returns, independent of whether any app is installed, so a conductor holding a key and no app can still produce the reconnect signature.
+
+### 4.2 Agent Key Persistence
+
+A client must record the agent-key-to-hApp association in local storage **before** it calls `POST /v1/join`.
+
+This is a requirement rather than advice because only one of the two orders is achievable. Local write, then remote call: whenever the process dies, the key is on disk, and the decision tree in Section 4.1 finds it and recovers. Remote call, then local write: the interval between the server committing the session and the client's write reaching disk belongs to neither party, and nothing the client can do closes it. Persisting the session token instead hits the same wall from a worse position — the token does not exist until the response arrives, so it can only be written after the state it is meant to recover already exists on the server.
+
+What this ordering protects is not identity. A client that joins, crashes, and finds no recorded key on its next run generates a new one; the abandoned key has no chain and no cells, so nothing is forked and nothing is corrupt. What it loses is the join. `409 agent_already_joined` is scoped to the agent-key-plus-network pair (Section 3.2), so the ready session now belongs to a key the client can no longer name, and the new key has to clear authentication from the start. Where that means another invite code, the cost is real: the reference `invite_code` method consumes a code on first successful use, so an agent whose only credential was a single-use code, with no operator to issue a replacement, cannot join at all.
+
+---
+
+## 5. Error Response Format
 
 All errors follow a consistent JSON structure:
 
@@ -880,7 +925,7 @@ All errors follow a consistent JSON structure:
 
 ---
 
-## 5. CORS and Rate Limiting
+## 6. CORS and Rate Limiting
 
 ### CORS
 
@@ -919,16 +964,30 @@ Recommended limits:
 
 ---
 
-## 6. Security Considerations
+## 7. Security Considerations
+
+### Admission Control Scope
+
+This service decides who is allowed to join a network. It does not prevent source-chain forks, and cannot.
+
+Withholding a fresh membrane proof from an agent that has already joined does not stop that agent from running two conductors on one identity. Anyone holding the private key can copy the whole conductor directory — key, source chain, and the membrane proof issued at the original provision — and start a second node without contacting this service at all. Fork prevention is Holochain's: divergent chains are caught during validation and answered with warrants against the agent that produced them.
+
+`409 agent_already_joined` is therefore not a fork guard and should not be defended as one. It exists because `POST /v1/join` carries no proof of key possession — it accepts an agent key, which is public information, and the session token it returns is a bearer credential for `GET /v1/join/{session}/provision`. Answering a repeat join with the existing session would let any third party who knows an agent's public key confirm that agent's membership, read `network_config`, the linker URLs, and the hApp bundle URL, and mint membrane proofs in that agent's name. It would also return before authentication is evaluated, so an agent removed from an allow list, or admitted on a since-revoked invite, would keep provisioning. The recovery path for the legitimate key holder is `POST /v1/reconnect` (Section 3.6), which requires a signature.
 
 ### Session Scoping
 - Each session is bound to the `agent_key` that created it. Provision data is only issued for that agent.
 - Session tokens: cryptographically random, at least 128 bits of entropy, prefixed `js_`.
-- Expiry: 1 hour for pending sessions, 24 hours for ready sessions.
+- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire.
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
 - The server does NOT verify private key ownership — that proof happens at the Holochain network level during genesis and all subsequent signed actions.
+
+### Reconnect Replay Window
+
+`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting any timestamp within `reconnect.timestamp_tolerance_seconds` of server time (default 300). Ready sessions do not expire, so a reconnect request observed anywhere — a proxy log, a debug capture, a compromised client — can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
+
+Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to widen the signed payload beyond the bare timestamp — covering at least the agent key and a server-issued nonce — so that a captured signature cannot be replayed at all.
 
 ### Membrane Proof Integrity
 - Generated server-side per DNA, typically includes agent key + DNA hash + timestamp + server signature.
@@ -946,7 +1005,7 @@ Recommended limits:
 
 ---
 
-## 7. Authentication Methods Reference
+## 8. Authentication Methods Reference
 
 | Method | Claims Required | Challenge Type | Response Format | Notes |
 |--------|----------------|----------------|-----------------|-------|
@@ -1071,9 +1130,9 @@ The client uses ethers.js, viem, or wallet API to sign the message and returns t
 
 ---
 
-## 8. Example Flows
+## 9. Example Flows
 
-### 8.1 Open Join (no verification)
+### 9.1 Open Join (no verification)
 
 ```
 Client                                      Joining Service
@@ -1093,7 +1152,7 @@ Client                                      Joining Service
   ├─ [fetch hApp bundle, install, connect] ──────►│
 ```
 
-### 8.2 Email Verification
+### 9.2 Email Verification
 
 ```
 Client                                      Joining Service
@@ -1117,7 +1176,7 @@ Client                                      Joining Service
   │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
-### 8.3 EVM Wallet Signing
+### 9.3 EVM Wallet Signing
 
 ```
 Client                                      Joining Service
@@ -1138,7 +1197,7 @@ Client                                      Joining Service
   │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
-### 8.4 Read-Only Gateway Before Join
+### 9.4 Read-Only Gateway Before Join
 
 ```
 Client                                      Joining Service
@@ -1157,7 +1216,7 @@ Client                                      Joining Service
   ├─ [switch from http-gw to local WASM via linker]
 ```
 
-### 8.5 Reconnect (Get Updated URLs)
+### 9.5 Reconnect (Get Updated URLs)
 
 ```
 Agent (already joined)                  Joining Service
@@ -1173,14 +1232,14 @@ Agent (already joined)                  Joining Service
   │  (server verifies ed25519 signature      │
   │   and confirms agent has joined)         │
   │                                          │
-  │◄─ { linker_urls: ["wss://..."],         │
-  │     http_gateways: [...],               │
-  │     linker_urls_expire_at: "..." } ─────┤
+  │◄─ { linker_urls: [{ url: "wss://...",   │
+  │       expires_at: "..." }],             │
+  │     http_gateways: [...] } ─────────────┤
   │                                          │
   ├─ [reconnect to new linker URLs] ────────►
 ```
 
-### 8.6 OR Group (Email or SMS)
+### 9.6 OR Group (Email or SMS)
 
 ```
 Client                                      Joining Service
@@ -1213,7 +1272,7 @@ Client                                      Joining Service
   │   completing either one is sufficient)       │
 ```
 
-### 8.7 Agent Allow List
+### 9.7 Agent Allow List
 
 ```
 Client                                      Joining Service
@@ -1237,7 +1296,7 @@ Client                                      Joining Service
   │◄─ { status: "ready" } ────────────────────────┤
 ```
 
-### 8.8 HC-Auth Approval (Operator/KYC Gate)
+### 9.8 HC-Auth Approval (Operator/KYC Gate)
 
 ```
 Client                                      Joining Service          HC-Auth Server
@@ -1271,7 +1330,7 @@ Client                                      Joining Service          HC-Auth Ser
   │◄─ { linker_urls, roles } ────────────────────┤                        │
 ```
 
-### 8.9 Multi-Step Verification (Email + KYC)
+### 9.9 Multi-Step Verification (Email + KYC)
 
 ```
 Client                                      Joining Service
@@ -1302,9 +1361,44 @@ Client                                      Joining Service
   │◄─ { linker_urls, roles } ────────────────────┤
 ```
 
+### 9.10 Recovery After an Interrupted Install
+
+```
+Client (agent key, no hApp)              Joining Service
+  │                                          │
+  │  (an earlier run joined, got a session   │
+  │   token, and died before provisioning;   │
+  │   POST /v1/join now answers 409)         │
+  │                                          │
+  ├─ POST /v1/reconnect                     │
+  │  { agent_key: "uhCAk...",               │
+  │    timestamp: "2026-02-25T12:00:00Z",   │
+  │    signature: "base64...",              │
+  │    network: "mewsfeed" } ───────────────►│
+  │                                          │
+  │  (server verifies the ed25519 signature  │
+  │   and finds the agent's ready session    │
+  │   on that network)                       │
+  │                                          │
+  │◄─ { linker_urls, http_gateways,         │
+  │     session: "js_a1b2c3d4e5f6" } ───────┤
+  │                                          │
+  ├─ GET /v1/join/{session}/provision ─────►│
+  │◄─ { linker_urls, roles,                 │
+  │     happ_bundle_url } ──────────────────┤
+  │                                          │
+  ├─ [fetch hApp bundle, install, connect] ─►│
+  │                                          │
+  │  (had the agent never joined "mewsfeed", │
+  │   reconnect would answer 403             │
+  │   agent_not_joined and the client would  │
+  │   fall through to POST /v1/join —        │
+  │   see Section 4.1)                       │
+```
+
 ---
 
-## 9. TypeScript Type Definitions
+## 10. TypeScript Type Definitions
 
 These types define the API contract for client implementations:
 

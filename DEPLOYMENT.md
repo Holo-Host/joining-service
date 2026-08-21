@@ -397,7 +397,7 @@ Response:
 
 Re-posting an already-registered `agent_key` updates its label and returns `200 OK`; `registered_at` keeps the first registration's timestamp. Unregister the agent first if you want it reset.
 
-Registered agents are persisted using the same backend as `session.store`: `memory` agents are ephemeral and lost on restart; `sqlite` agents are written to `allowed-agents.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext; the bundled worker entry does not wire this yet.
+Registered agents are persisted using the same backend as `session.store`: `memory` agents are ephemeral and lost on restart; `sqlite` agents are written to `allowed-agents.db` alongside the sessions database. On Workers, this works out of the box: the bundled worker entry constructs a `KvAllowedAgentStore` against the `SESSIONS` KV binding whenever `agent_allow_list` is in `auth_methods` or `agent_registration` is configured.
 
 Registrations only affect who can join when `agent_allow_list` is present in `auth_methods` — if `agent_registration.admin_secret` is set without it, the server logs a startup warning that registrations will have no effect on joins. Note also that `allowed-agents.db` is created on `sqlite` deployments whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — the static `allowed_agents` list uses the same store.
 
@@ -448,7 +448,7 @@ curl -X POST https://join.example.com/v1/join \
   }'
 ```
 
-Registered networks are persisted using the same backend as `session.store`: `memory` networks are ephemeral and lost on restart; `sqlite` networks are written to `networks.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvNetworkStore` and pass it as `networkStore` in the ServiceContext; the bundled worker entry does not wire this yet. A network's `dna_hash`es must be unique across every registered network and the service's own static `roles` -- registering a duplicate is rejected with 409 `duplicate_dna_hash` (see JOINING_SERVICE_API.md Section 3.11).
+Registered networks are persisted using the same backend as `session.store`: `memory` networks are ephemeral and lost on restart; `sqlite` networks are written to `networks.db` alongside the sessions database. On Workers, this works out of the box: the bundled worker entry constructs a `KvNetworkStore` against the `SESSIONS` KV binding whenever `network_registration` is configured. A network's `dna_hash`es must be unique across every registered network and the service's own static `roles` -- registering a duplicate is rejected with 409 `duplicate_dna_hash` (see JOINING_SERVICE_API.md Section 3.11).
 
 A service can also run **dynamic-only**: configure `network_registration` without any static `roles` in config, and the service has no roles of its own until networks are registered at runtime. Joins that omit `network` (or every network registration that gets deleted later) still succeed and provision linker/gateway URLs with no `roles` -- useful for operators who want every network onboarded through the admin API rather than baked into the service's config file.
 
@@ -699,6 +699,7 @@ zone_name = "example.com"
 - **No filesystem.** `membrane_proof.signing_key_path` is not available; pass the hex seed as the `MEMBRANE_PROOF_SIGNING_KEY` secret instead.
 - **No SQLite.** Use `session.store: "cloudflare-kv"`.
 - **KV consistency.** KV is eventually consistent. Under high concurrent join load, two requests for the same agent key may race and create duplicate pending sessions. This is harmless: one will be overwritten. Ready sessions are not affected.
+- **Dynamic registration works out of the box.** Allowed-agent, network, and linker admin routes (`/v1/admin/allowed-agents`, `/v1/admin/networks`, `/v1/admin/linkers`) are all backed by the `SESSIONS` KV binding as soon as their corresponding config secrets (`agent_registration.admin_secret`, `network_registration.admin_secret`, `linker_auth.admin_secret`) are set -- no extra wiring is needed. Dynamic linker registration is Workers-only: Node deployments have no KV backend for it (see below).
 
 ---
 
@@ -774,6 +775,10 @@ Example `/etc/joining-service/config.json`:
   "port": 3000
 }
 ```
+
+### Dynamic linker registration
+
+Allowed-agent and network registration (`agent_registration`, `network_registration`) work on Node out of the box, backed by `sqlite` or `memory` per `session.store`. Dynamic *linker* registration does not: `LinkerRegistrationStore` is constructed against a KV-namespace-shaped store, and no Node (sqlite/memory) implementation of that shape ships -- only Cloudflare Workers KV satisfies it out of the box. Running dynamic linker registration on Node requires embedding the service as a library (`import { createApp, ... } from '@holo-host/joining-service'`) and supplying your own `linkerRegistrationStore` in the `ServiceContext`.
 
 ### Install the signing key file
 
