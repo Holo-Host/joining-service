@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import * as ed from '@noble/ed25519';
 import type { AgentPubKeyB64, Challenge } from '../types.js';
 import type { AuthMethodPlugin } from './plugin.js';
+import type { AllowedAgentStore } from '../agent-registration/store.js';
 import { fromBase64, decodeHashFromBase64 } from '../utils.js';
 
 export class AgentAllowListAuthMethod implements AuthMethodPlugin {
@@ -9,7 +10,10 @@ export class AgentAllowListAuthMethod implements AuthMethodPlugin {
 
   private allowedAgents: Set<AgentPubKeyB64>;
 
-  constructor(allowedAgents: AgentPubKeyB64[]) {
+  constructor(
+    allowedAgents: AgentPubKeyB64[],
+    private readonly store?: AllowedAgentStore,
+  ) {
     this.allowedAgents = new Set(allowedAgents);
   }
 
@@ -17,7 +21,10 @@ export class AgentAllowListAuthMethod implements AuthMethodPlugin {
     agentKey: string,
     _claims: Record<string, string>,
   ): Promise<Challenge[]> {
-    if (!this.allowedAgents.has(agentKey)) {
+    const allowed =
+      this.allowedAgents.has(agentKey) ||
+      (this.store ? await this.store.has(agentKey) : false);
+    if (!allowed) {
       // Return empty -- in an OR group, other methods can still work.
       // In an AND context, app.ts detects this as an unsatisfiable method.
       return [];

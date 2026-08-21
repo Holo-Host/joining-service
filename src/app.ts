@@ -26,6 +26,8 @@ import * as ed from '@noble/ed25519';
 import type { LinkerRegistrationStore } from './linker-registration/store.js';
 import { createAdminLinkerRoutes } from './routes/admin-linkers.js';
 import { createLinkerRoutes } from './routes/linker-heartbeat.js';
+import type { AllowedAgentStore } from './agent-registration/store.js';
+import { createAdminAgentRoutes } from './routes/admin-agents.js';
 
 export interface ServiceContext {
   config: ServiceConfig;
@@ -35,6 +37,7 @@ export interface ServiceContext {
   urlProvider: UrlProvider;
   hcAuthClient?: HcAuthClient;
   linkerRegistrationStore?: LinkerRegistrationStore;
+  allowedAgentStore?: AllowedAgentStore;
 }
 
 /**
@@ -778,6 +781,11 @@ export function createApp(ctx: ServiceContext): Hono {
     const linkerRoutes = createLinkerRoutes(ctx.linkerRegistrationStore, ctx.config.linker_auth);
     app.route('', adminRoutes);
     app.route('', linkerRoutes);
+  }
+
+  // ---- Dynamic allowed-agent registration routes ----
+  if (ctx.config.agent_registration?.admin_secret && ctx.allowedAgentStore) {
+    app.route('', createAdminAgentRoutes(ctx.allowedAgentStore, ctx.config.agent_registration.admin_secret));
   }
 
   // ---- POST /v1/reconnect ----

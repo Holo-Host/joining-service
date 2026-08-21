@@ -19,6 +19,10 @@ import type { HcAuthClient } from '../src/hc-auth/index.js';
 import type { AuthMethod, AuthMethodEntry } from '../src/types.js';
 import type { Hono } from 'hono';
 import { encodeHashToBase64, dhtLocationFrom32 } from '../src/utils.js';
+import { MemoryAllowedAgentStore } from '../src/agent-registration/memory-store.js';
+import type { AllowedAgentStore } from '../src/agent-registration/store.js';
+import { LinkerRegistrationStore } from '../src/linker-registration/store.js';
+import { createMockKV } from './linker-registration/helpers.js';
 
 /**
  * Generate a fake AgentPubKey in HoloHash base64 format ("u" + base64url).
@@ -98,20 +102,31 @@ export async function createTestApp(
     );
   }
 
+  // Flatten AuthMethodEntry[] to unique method names for plugin init
+  const methods = new Set<AuthMethod>();
+  for (const entry of config.auth_methods) {
+    if (typeof entry === 'object' && 'any_of' in entry) {
+      for (const m of (entry as { any_of: AuthMethod[] }).any_of) methods.add(m);
+    } else {
+      methods.add(entry as AuthMethod);
+    }
+  }
+
+  const allowedAgentStore: AllowedAgentStore | undefined =
+    config.agent_registration || methods.has('agent_allow_list')
+      ? new MemoryAllowedAgentStore()
+      : undefined;
+
+  const linkerRegistrationStore: LinkerRegistrationStore | undefined =
+    config.linker_auth?.admin_secret
+      ? new LinkerRegistrationStore(createMockKV())
+      : undefined;
+
   let authPlugins: Map<string, AuthMethodPlugin>;
   if (pluginOverrides) {
     authPlugins = pluginOverrides;
   } else {
     authPlugins = new Map();
-    // Flatten AuthMethodEntry[] to unique method names for plugin init
-    const methods = new Set<AuthMethod>();
-    for (const entry of config.auth_methods) {
-      if (typeof entry === 'object' && 'any_of' in entry) {
-        for (const m of (entry as { any_of: AuthMethod[] }).any_of) methods.add(m);
-      } else {
-        methods.add(entry as AuthMethod);
-      }
-    }
     for (const method of methods) {
       switch (method) {
         case 'open':
@@ -136,7 +151,7 @@ export async function createTestApp(
         case 'agent_allow_list':
           authPlugins.set(
             'agent_allow_list',
-            new AgentAllowListAuthMethod(config.allowed_agents ?? []),
+            new AgentAllowListAuthMethod(config.allowed_agents ?? [], allowedAgentStore),
           );
           break;
         case 'hc_auth_approval':
@@ -171,6 +186,8 @@ export async function createTestApp(
     proofGenerator,
     urlProvider: resolvedUrlProvider,
     hcAuthClient,
+    allowedAgentStore,
+    linkerRegistrationStore,
   };
 
   const app = createApp(ctx);
