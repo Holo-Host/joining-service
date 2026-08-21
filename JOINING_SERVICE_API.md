@@ -80,6 +80,8 @@ Served from the **app domain** (the domain where the hApp UI is hosted). Returns
 
 If the file does not exist, the client falls back to manual configuration (developer passes `linkerUrl` directly, as is done today).
 
+The document's `happ_id` is also the identifier that routes discovery to the right network on a joining service that hosts more than one: a client passes it through as `network` on `POST /v1/join` (Section 3.2) and can look up its metadata at `GET /v1/info/:happ_id` (Section 3.1). The `.well-known` document format itself is unchanged -- it has always carried `happ_id`.
+
 ---
 
 ## 3. Endpoints
@@ -87,6 +89,8 @@ If the file does not exist, the client falls back to manual configuration (devel
 ### 3.1 `GET /v1/info` — Service Info
 
 Returns hApp metadata, available read-only gateways, supported auth methods, and linker information. **Unauthenticated** — anyone loading the page can call this.
+
+**Note**: This bare endpoint describes only the service's statically configured network (the static `roles` in config). To discover any network -- including registered ones -- by id, use `GET /v1/info/:happ_id` below.
 
 **Response** (`200 OK`):
 ```json
@@ -144,6 +148,43 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 | `network_config.bootstrap_url` | string (URL) | no | Bootstrap server URL |
 | `network_config.relay_url` | string (URL) | no | Relay server URL |
 
+**`GET /v1/info/:happ_id`** — Same response shape, scoped to a specific network. **Unauthenticated**, mounted next to the bare endpoint above.
+
+- If `:happ_id` equals the service's own statically configured happ id (`happ.id` in config), the response is identical to the bare `GET /v1/info` above -- it's an alias, not a second network.
+- If `:happ_id` names a network registered via `POST /v1/admin/networks` (Section 3.11), the response uses that network's own data: `happ.name` falls back to `happ_id` when the registration didn't set `happ.name`; `happ.description`/`happ.icon_url` come from the registration's `happ` object (absent if unset); `happ_bundle_url` comes only from the registration's `happ.happ_bundle_url` (no fallback to the service's own `happ_bundle_url`); `roles` reflects that network's own roles. `http_gateways`, `auth_methods`, `linker_info`, and `network_config` are service-wide and identical to the bare endpoint's, since they don't vary per network.
+- **Gated networks omit `roles`**: if the network has a non-empty `allowed_agents` (Section 3.11), `roles` is absent from this response, even though `happ` and the service-level fields are still served. An `allowed_agents` gate restricts *joining*, not visibility of an unauthenticated endpoint -- exposing the role modifiers (e.g. `network_seed`) to anyone who knows or guesses the `happ_id` would leak them regardless of the gate. Agents that clear the gate still receive `roles`/membrane proofs normally at `GET /v1/join/{session}/provision` (Section 3.5).
+- If `:happ_id` is neither the static happ id nor a registered network, the response is `404 unknown_network`.
+
+**Response** (`200 OK`) — `GET /v1/info/acme-net` for a registered, ungated network:
+```json
+{
+  "happ": {
+    "id": "acme-net",
+    "name": "Acme",
+    "description": "Acme's pipeline-provisioned network"
+  },
+  "http_gateways": [
+    {
+      "url": "https://gw1.example.com",
+      "dna_hashes": ["uhC0k..."],
+      "status": "available"
+    }
+  ],
+  "auth_methods": ["agent_allow_list"],
+  "happ_bundle_url": "https://releases.acme.example/acme.happ",
+  "roles": {
+    "main": {
+      "dna_modifiers": {
+        "network_seed": "acme-mainnet-2026",
+        "properties": {}
+      }
+    }
+  }
+}
+```
+
+`happ_bundle_url` and `roles` are the registration's own; `http_gateways` and `auth_methods` are the same service-wide values the bare endpoint returns. For a gated network the same response omits `roles`.
+
 ---
 
 ### 3.2 `POST /v1/join` — Initiate Join
@@ -154,6 +195,7 @@ The client sends its agent key and optional identity claims. The server determin
 ```json
 {
   "agent_key": "uhCAk...",
+  "network": "my-network",
   "claims": {
     "email": "user@example.com"
   }
@@ -169,6 +211,7 @@ The client sends its agent key and optional identity claims. The server determin
 | `claims.evm_address` | string | no | EVM wallet address (0x-prefixed, checksummed) |
 | `claims.solana_address` | string | no | Solana wallet address (base58) |
 | `claims.invite_code` | string | no | Pre-issued invite code |
+| `network` | string | no | `happ_id` of a registered network (see Section 3.11 for registration), or the service's own statically configured happ id (`happ.id` in config). Naming the statically configured happ id is treated exactly as omitting `network` -- both land the session in the same scope and receive the service's static `roles` at provision. If present but not a string, not matching the happ_id format, or not registered with the service (and not the static happ id), the join is rejected with 400 `unknown_network`. If the named network has a non-empty `allowed_agents` and `agent_key` is not in it, the join is rejected with 403 `join_rejected` -- see Section 3.11. |
 
 **Response** (`201 Created`) — verification required:
 ```json
@@ -231,10 +274,13 @@ The client sends its agent key and optional identity claims. The server determin
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `unknown_network` | `network` value is not a string, does not match the network-id format, or names a network not registered with this service |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
-| 403 | `join_rejected` | Join was rejected (agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
-| 409 | `agent_already_joined` | This agent key has already completed joining. Use `POST /v1/reconnect` instead. |
+| 403 | `join_rejected` | Join was rejected (agent not on the named network's `allowed_agents`, agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
+| 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
 | 429 | `rate_limited` | Too many join attempts |
+
+An agent key can hold at most one live session per network: joining is scoped to the agent-key-plus-network pair (an omitted `network`, and the statically configured network's own happ id, are the same scope -- see Section 3.2). An agent that already joined one network may join a different network -- that second join is a separate session with its own roles at provision time. Re-joining a network the agent already has a live session on gets `409 agent_already_joined`; there is no re-join within the same network. `POST /v1/reconnect` (Section 3.6) refreshes linker/gateway URLs for an agent with any ready session, regardless of which network it named, and separately returns a network-scoped `session` token when the requested network has a ready session -- that token is for the same `GET /v1/join/{session}/provision` (Section 3.5) call the original join would have used, which is how an agent that crashed between receiving its session token and provisioning recovers without a second join.
 
 ---
 
@@ -346,7 +392,7 @@ The `/status` endpoint returns the current session state, including status and o
 
 ### 3.5 `GET /v1/join/{session}/provision` — Get Provision
 
-Retrieve the provision data needed to connect to the Holochain network. Only available when session status is `"ready"`.
+Retrieve the provision data needed to connect to the Holochain network. Only available when session status is `"ready"`. The `roles` and `happ_bundle_url` fields are populated from the named network's registration (if a `network` was specified at join time) -- `happ_bundle_url` comes only from that registration's `happ.happ_bundle_url`, with no fallback to the service's own, so it is absent if the registration didn't set one. A session with no named network uses the service's static `roles` and `happ.happ_bundle_url` configuration. `network_config` (bootstrap/relay/auth-server URLs) is not part of a network registration -- it comes from the service's own config and is the same for every session regardless of which `network` was joined.
 
 **Response** (`200 OK`):
 ```json
@@ -384,7 +430,7 @@ Retrieve the provision data needed to connect to the Holochain network. Only ava
 | `roles` | object | no | Per-role provision data. Role name → `{ membrane_proof?, dna_modifiers? }`. Mirrors `hc s call install-app --roles-settings` during app installation. See `RoleProvision` type. |
 | `roles[role_name].membrane_proof` | string | no | Base64-encoded msgpack membrane proof for this role's DNA. One entry per role that requires a membrane proof. |
 | `roles[role_name].dna_modifiers` | object | no | DNA modifiers for this role (network_seed, properties, etc.) |
-| `happ_bundle_url` | string (URL) | no | URL to fetch the .happ bundle. May differ from `/info` response (gated behind auth). |
+| `happ_bundle_url` | string (URL) | no | URL to fetch the .happ bundle: the named network's own `happ.happ_bundle_url` if a `network` was joined (no fallback to the service's), otherwise the service's static `happ.happ_bundle_url`. |
 | `network_config` | object | no | Network service URLs for conductor configuration. Only present when at least one URL is available. |
 | `network_config.auth_server_url` | string (URL) | no | HC-Auth server URL (derived from `hc_auth.url` config). The conductor runtime can call `/now` on this to obtain info for `auth_material`. |
 | `network_config.bootstrap_url` | string (URL) | no | Bootstrap server URL |
@@ -397,16 +443,18 @@ Retrieve the provision data needed to connect to the Holochain network. Only ava
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 403 | `not_ready` | Session exists but status is not `"ready"` |
 | 403 | `agent_revoked` | Agent was blocked by administrator (hc_auth_approval revocation) |
+| 404 | `unknown_network` | Network named at join time was deleted before provisioning |
 | 410 | `session_expired` | Session has expired; must start over |
 
 ---
 
 ### 3.6 `POST /v1/reconnect` — Reconnect (Get Updated URLs)
 
-An agent that has already completed joining can request updated linker URLs and gateway URLs. This is used when:
+An agent that has already completed joining can request updated linker URLs and gateway URLs, and recover the session token for a network it has a ready session on. This is used when:
 - One or more linker URL reservations have expired (per-entry `expires_at` has passed)
 - The client has lost connectivity and needs fresh infrastructure URLs
 - The pool of available linkers or gateways has changed
+- The client completed `POST /v1/join` and received a session token, then crashed or lost the token before calling `GET /v1/join/{session}/provision` -- reconnect is how it gets back a session token to provision with, without a second join (which would 409)
 
 This endpoint does **not** re-run verification challenges. Instead, the agent proves key ownership by signing a timestamp with their ed25519 private key.
 
@@ -415,7 +463,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 {
   "agent_key": "uhCAk...",
   "timestamp": "2026-02-25T12:00:00Z",
-  "signature": "base64-encoded-ed25519-signature-of-timestamp"
+  "signature": "base64-encoded-ed25519-signature-of-timestamp",
+  "network": "my-network"
 }
 ```
 
@@ -423,7 +472,16 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 |-------|------|----------|-------------|
 | `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (same key used during join) |
 | `timestamp` | string (ISO 8601) | yes | Current UTC timestamp. Server rejects if more than 5 minutes from server time. |
-| `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key` |
+| `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key`. The signature covers only `timestamp` -- `network` selects among the agent's own already-authenticated sessions and does not need to be signed over. |
+| `network` | string | no | `happ_id` of the network whose session token to look up (same value as sent to `POST /v1/join`). Omitted, or equal to the service's own statically configured happ id, targets the static network -- both spellings are the same scope, as in Section 3.2. If present but not a string, or not matching the happ_id format, the request is rejected with 400 `unknown_network` rather than falling back to the static scope. |
+
+The linker/gateway URL refresh and the session-token lookup are checked separately:
+
+- **URL refresh** works as soon as the agent has *any* ready session on the service, regardless of which network (or no network) that session named -- linker/gateway URLs are service-wide, not per-network. This gate is what `403 agent_not_joined` below reports.
+- **Session-token lookup** is scoped to the requested network (static network if `network` was omitted):
+  - A ready session there → response includes `session`.
+  - `network` was explicitly given and names a network other than the statically configured one, and there's no ready session there → `403 agent_not_joined`, naming that network, instead of a 200 with no `session`. This is the caller's signal to `POST /v1/join` that network instead.
+  - `network` was omitted, or explicitly given as the statically configured happ id (the two are the same scope), and the static network has no ready session → `session` is simply absent from an otherwise-normal `200` response; this is not an error (an agent whose only session names a non-static network still gets its URL refresh).
 
 **Response** (`200 OK`):
 ```json
@@ -438,7 +496,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
       "dna_hashes": ["uhC0k..."],
       "status": "available"
     }
-  ]
+  ],
+  "session": "js_a1b2c3d4e5f6"
 }
 ```
 
@@ -446,6 +505,7 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 |-------|------|----------|-------------|
 | `linker_urls` | LinkerUrl[] | no | Updated ordered list of linker URL entries. Absent when the service does not manage linker relay URLs. Each entry may carry its own `expires_at`. |
 | `http_gateways` | array | no | Current read-only gateway instances (same schema as `/v1/info`). Each entry may carry its own `expires_at`. |
+| `session` | string | no | Session token for the requested network's ready session (see the three-case behavior above). Pass it to `GET /v1/join/{session}/provision` (Section 3.5) exactly as with a fresh join. Absent when the requested scope has no ready session and `network` was omitted. |
 
 **Errors**:
 
@@ -454,7 +514,8 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
 | 400 | `invalid_signature` | Signature does not verify against agent key |
 | 400 | `timestamp_out_of_range` | Timestamp is more than 5 minutes from server time |
-| 403 | `agent_not_joined` | This agent key has not completed joining |
+| 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
+| 403 | `agent_not_joined` | This agent key has no ready session at all, or `network` was explicitly given as a network other than the static one and has no ready session there |
 | 403 | `agent_revoked` | Agent was blocked by administrator (hc_auth_approval revocation) |
 | 429 | `rate_limited` | Too many reconnect attempts |
 
@@ -584,6 +645,205 @@ The admin routes (`POST /v1/admin/allowed-agents`, `GET /v1/admin/allowed-agents
 - `memory` — agents are lost on server restart (ephemeral; suitable for development)
 - `sqlite` — agents are persisted to disk in `allowed-agents.db` (same directory as `sessions.db`). Note: this file is created whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — it backs the static `allowed_agents` list's lookups too.
 - `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box.
+
+---
+
+### 3.11 `POST /v1/admin/networks` — Register Network
+
+Operator endpoint to register a network at runtime, enabling clients to join with network-specific roles and allowed agents. This is a complete, one-call registration: a network defined with its progenitor in `allowed_agents` can be immediately joined without additional configuration or restart.
+
+Re-registering an existing `happ_id` replaces the record entirely. This does not revoke any challenges already issued to agents who were in a previous `allowed_agents` but are absent from the new one -- an agent that received an `agent_allow_list` challenge before the record changed can still complete that challenge and reach `ready`. Only the network's own `allowed_agents` gate at `POST /v1/join` sees the updated list; in-flight verification for an already-issued challenge is unaffected.
+
+**Authentication**: Bearer token via `Authorization` header. The token value must match the server's `network_registration.admin_secret` config. Requests without the header return 401 `unauthorized`; requests with a wrong token return 403 `forbidden`.
+
+**Request**:
+```json
+{
+  "happ_id": "acme-network",
+  "happ": {
+    "name": "ACME network",
+    "happ_bundle_url": "https://acme.example.com/acme.happ"
+  },
+  "roles": {
+    "main": {
+      "dna_hash": "uhC0k..."
+    },
+    "profile": {
+      "dna_hash": "uhC0k...",
+      "modifiers": {
+        "network_seed": "acme-network-2026",
+        "properties": { "region": "us-east" }
+      }
+    }
+  },
+  "allowed_agents": ["uhCAk..."]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `happ_id` | string | yes | Network identifier matching `/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/` -- the same identity space as a conductor installed-app id (dots included, for reverse-DNS-style ids). Must not equal the service's own statically configured happ id (`happ.id` in config); registering it is rejected with 400 `invalid_happ_id`, since that id already denotes the static network. |
+| `happ` | object | no | Optional hApp metadata for this network, surfaced via `GET /v1/info/:happ_id` (Section 3.1). All sub-fields are optional. |
+| `happ.name` | string | no | Human-readable name. Falls back to `happ_id` in `/v1/info/:happ_id` when absent. |
+| `happ.description` | string | no | Short description |
+| `happ.icon_url` | string (URL) | no | Icon URL |
+| `happ.happ_bundle_url` | string (URL) | no | URL to download this network's .happ bundle. Independent of the service's own `happ.happ_bundle_url` -- there is no fallback between them. |
+| `roles` | Record<string, RoleConfig> | yes | Per-role DNA configuration. Must not be empty. `dna_hash` is optional, but required per-role when the service has `membrane_proof.enabled` (it binds the membrane proof to a network); when present it is always validated. Each `dna_hash` must be unique across every other registered network and the service's own static `roles` -- a network's identity stands in for its DNA hash, so reusing a hash across two networks would let one agent join both and receive membrane proofs for the same cell twice; duplicates are rejected with 409 `duplicate_dna_hash`. Duplicates *within* one registration's own roles are allowed (same-DNA multi-role apps exist). Re-registering an existing `happ_id` is exempt from this check against its own prior hashes. `modifiers` is optional. |
+| `allowed_agents` | string[] | no | Agent public keys allowed to join this network. Typically includes the network's progenitor. When non-empty, `POST /v1/join` rejects any other agent naming this network with 403 `join_rejected` -- this applies on top of whatever `auth_methods` the service otherwise requires, so it restricts joining even under `open` or `email_code` auth. An absent or empty list leaves the network unrestricted: any agent that satisfies the service's `auth_methods` may join it. |
+
+**Response** (`201 Created`):
+```json
+{
+  "happ_id": "acme-network",
+  "happ": {
+    "name": "ACME network",
+    "happ_bundle_url": "https://acme.example.com/acme.happ"
+  },
+  "roles": {
+    "main": { "dna_hash": "uhC0k..." },
+    "profile": {
+      "dna_hash": "uhC0k...",
+      "modifiers": {
+        "network_seed": "acme-network-2026",
+        "properties": { "region": "us-east" }
+      }
+    }
+  },
+  "allowed_agents": ["uhCAk..."],
+  "registered_at": "2026-02-24T12:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `happ_id` | string | The registered network's happ id |
+| `happ` | object | hApp metadata mirrored from request (if provided) |
+| `roles` | Record<string, RoleConfig> | Roles mirrored from request |
+| `allowed_agents` | string[] | Allowed agent keys (if provided in request) |
+| `registered_at` | string (ISO 8601) | Timestamp when the network was registered |
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `invalid_happ_id` | `happ_id` does not match `/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/`, or it conflicts with the service's static happ id |
+| 400 | `invalid_role_config` | `roles` is empty, a role's `dna_hash` is not a valid DnaHash, or `dna_hash` is missing on a role while `membrane_proof.enabled` is true (names the problematic role) |
+| 400 | `invalid_agent_key` | An `allowed_agents` entry is not a valid base64-encoded 39-byte AgentPubKey |
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Authorization header present but token does not match `network_registration.admin_secret` |
+| 409 | `duplicate_dna_hash` | A role's `dna_hash` is already used by another registered network or by the service's own static `roles` (names the hash and the owning network's `happ_id`) |
+
+---
+
+### 3.12 `GET /v1/admin/networks` — List Networks
+
+Retrieve all registered networks (runtime-registered only; the statically configured network is not exposed here).
+
+**Authentication**: Bearer token (same as POST endpoint).
+
+**Response** (`200 OK`):
+```json
+{
+  "networks": [
+    {
+      "happ_id": "acme-network",
+      "happ": { "name": "ACME network" },
+      "roles": { "main": { "dna_hash": "uhC0k..." }, "profile": { "dna_hash": "uhC0k..." } },
+      "allowed_agents": ["uhCAk..."],
+      "registered_at": "2026-02-24T12:00:00Z"
+    },
+    {
+      "happ_id": "beta-network",
+      "happ": { "name": "Beta network" },
+      "roles": { "main": { "dna_hash": "uhC0k..." } },
+      "registered_at": "2026-02-24T13:15:00Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `networks` | NetworkRecord[] | List of registered networks |
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Invalid token |
+
+---
+
+### 3.13 `GET /v1/admin/networks/:happ_id` — Get Network
+
+Retrieve a single registered network by id.
+
+**Authentication**: Bearer token (same as POST endpoint).
+
+**URL Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `happ_id` | string | Network identifier |
+
+**Response** (`200 OK`):
+```json
+{
+  "happ_id": "acme-network",
+  "happ": { "name": "ACME network" },
+  "roles": { "main": { "dna_hash": "uhC0k..." } },
+  "allowed_agents": ["uhCAk..."],
+  "registered_at": "2026-02-24T12:00:00Z"
+}
+```
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Invalid token |
+| 404 | `not_found` | Network not registered |
+
+---
+
+### 3.14 `DELETE /v1/admin/networks/:happ_id` — Delete Network
+
+Remove a network from the runtime-registered list. Existing sessions for that network are unaffected; provisioning a session whose network was deleted returns 404 `unknown_network`.
+
+**Authentication**: Bearer token (same as POST endpoint).
+
+**URL Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `happ_id` | string | Network identifier |
+
+**Response** (`204 No Content`): No body.
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `unauthorized` | No Authorization header provided |
+| 403 | `forbidden` | Invalid token |
+| 404 | `not_found` | Network not registered |
+
+---
+
+### 3.15 Network Registration — Configuration and Behavior
+
+The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/networks`, `GET/DELETE /v1/admin/networks/:happ_id`) are only enabled when `network_registration.admin_secret` is configured in the server config. If this field is absent, the endpoints return 404. A service with `network_registration` configured but no static `config.roles` is a valid, fully dynamic deployment: it has no roles of its own until networks are registered at runtime (see Section 3.1 for how `GET /v1/info` behaves without `roles`, and Section 3.2 for joining without a `network`).
+
+**Store Backend**: Registered networks are persisted using the same backend as the session store (`session.store` config):
+- `memory` — networks are lost on server restart (ephemeral; suitable for development)
+- `sqlite` — networks are persisted to disk in `networks.db` (same directory as `sessions.db`)
+- `cloudflare-kv` — requires manual wiring in the worker entry. The worker must construct a `KvNetworkStore` and pass it as `networkStore` in the ServiceContext. The bundled worker entry does not wire this yet; admin routes are only available on Node deployments out of the box. Note: KV's eventual consistency means two concurrent registrations of the same `happ_id` may race; the last write wins. The cross-network `dna_hash` uniqueness check (Section 3.11) is best-effort on this backend for the same reason: it lists all networks via a non-paginated KV `list()` under eventual consistency, so a duplicate registered moments earlier, or one from a list page not yet visible, can slip through undetected.
+
+**One-Call Pipeline Registration**: A key use case is network provisioning pipelines: a network is registered with its progenitor agent in `allowed_agents`, and the progenitor immediately joins with `"network": "<happ_id>"`. The registration and join do not require config edits or service restart — they are independent API calls that, in sequence, form a complete onboarding path. Setting `allowed_agents` to the progenitor's key is what makes this safe to run against a service configured with `open` or `email_code` auth: without it, any agent naming the network would receive its membrane proofs, not just the progenitor the pipeline registered.
+
+**`network_config` is service-wide**: `network_config` (bootstrap/relay/auth-server URLs, see Section 3.5) comes from the service's own config, not from a network registration -- it is identical for every session regardless of which `network` was joined. `roles` and `happ_bundle_url` (at both `/v1/info/:happ_id` and `GET /v1/join/{session}/provision`) come from the network's own registration instead, with no fallback to the service's static config.
 
 ---
 
@@ -719,6 +979,7 @@ The `agent_allow_list` method verifies that an agent's public key is in a pre-de
 
 - If the agent key is not in the allow list and the method is standalone (AND), the join is immediately rejected.
 - If the agent key is not in the allow list but the method is in an OR group, the other methods in the group can still satisfy it.
+- A named network's `allowed_agents` (Section 3.11) is a third source the plugin checks, alongside the static `allowed_agents` config and the `agent_registration` store: an agent listed there is eligible for this challenge when it joins naming that network, even if it appears in no other source.
 
 Config:
 ```json
@@ -1126,11 +1387,43 @@ interface RoleProvision {
   dna_modifiers?: DnaModifiers;
 }
 
+/** Per-role DNA configuration, mirroring Holochain's app model. */
+interface RoleConfig {
+  /**
+   * Base64 DnaHash ("uhC0k..."), strictly validated when present. Required
+   * when `membrane_proof.enabled` — a membrane proof is bound to a network
+   * via this hash. Must be the post-modifiers DNA hash as reported by the
+   * conductor that installed the DNA (see DEPLOYMENT.md).
+   */
+  dna_hash?: string;
+  /** Per-DNA modifiers for this role. */
+  modifiers?: DnaModifiers;
+}
+
+/** A registered network's runtime configuration. */
+interface NetworkRecord {
+  happ_id: string;
+  /** Optional hApp metadata for this network, surfaced via GET /v1/info/:happ_id. */
+  happ?: {
+    name?: string;
+    description?: string;
+    icon_url?: string;
+    happ_bundle_url?: string;
+  };
+  /** Per-role DNA configuration for this network (same shape as config.roles). */
+  roles: Record<string, RoleConfig>;
+  /** Agents allowed to join this network via agent_allow_list, e.g. its progenitor. */
+  allowed_agents?: AgentPubKeyB64[];
+  registered_at: string;
+}
+
 // --- /v1/join ---
 
 interface JoinRequest {
   agent_key: string;
   claims?: Record<string, string>;
+  /** Named network to join. Must be registered with the service (see network_registration). */
+  network?: string;
 }
 
 interface JoinResponse {
@@ -1199,12 +1492,16 @@ interface ReconnectRequest {
   agent_key: string;
   timestamp: string;
   signature: string;
+  /** Named network to reconnect to. Omitted, or equal to the static happ_id, selects the static network's session. */
+  network?: string;
 }
 
 interface ReconnectResponse {
   /** Absent when the service does not manage linker relay URLs. Each entry may carry its own expiry. */
   linker_urls?: LinkerUrl[];
   http_gateways?: HttpGateway[];
+  /** Session token for the requested network's ready session. Absent when the (possibly static-defaulted) scope has no ready session. */
+  session?: string;
 }
 
 // --- Errors ---

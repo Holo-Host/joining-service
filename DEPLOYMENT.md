@@ -371,6 +371,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `hc_auth.api_token` | string | — | Bearer token from the server's `API_TOKENS` env var |
 | `hc_auth.required` | boolean | false | Block provisioning/reconnect if hc-auth is unreachable |
 | `agent_registration.admin_secret` | string | — | Bearer token for the allowed-agent admin routes. If absent, admin routes return 404. When present, enables `POST/GET/DELETE /v1/admin/allowed-agents` for runtime registration of agents. |
+| `network_registration.admin_secret` | string | — | Bearer token for the network admin routes. If absent, admin routes return 404. When present, enables `POST/GET/DELETE /v1/admin/networks` for runtime registration of networks. |
 | `linker_auth` | LinkerAuthConfig | — | Linker authentication configuration |
 | `delegated_verification` | DelegatedVerificationConfig | — | Configuration for delegated verification auth method |
 
@@ -399,6 +400,57 @@ Re-posting an already-registered `agent_key` updates its label and returns `200 
 Registered agents are persisted using the same backend as `session.store`: `memory` agents are ephemeral and lost on restart; `sqlite` agents are written to `allowed-agents.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvAllowedAgentStore` and pass it as `allowedAgentStore` in the ServiceContext; the bundled worker entry does not wire this yet.
 
 Registrations only affect who can join when `agent_allow_list` is present in `auth_methods` — if `agent_registration.admin_secret` is set without it, the server logs a startup warning that registrations will have no effect on joins. Note also that `allowed-agents.db` is created on `sqlite` deployments whenever `agent_allow_list` is configured in `auth_methods`, even without `agent_registration` — the static `allowed_agents` list uses the same store.
+
+### Registering networks at runtime
+
+When `network_registration.admin_secret` is configured, operator pipelines can register networks without restarting the server. This enables dynamic network provisioning: a deployment pipeline spins up a network, registers it with the joining service in a single API call, and the progenitor can immediately join. A network's identity is its `happ_id` -- the same identity space as a conductor installed-app id -- not a separate slug.
+
+Registering the progenitor in `allowed_agents` is what makes this safe on a service configured with `open` or `email_code` auth: a non-empty `allowed_agents` restricts joining that network to the listed agents (any other agent naming the network gets 403 `join_rejected`), on top of whatever `auth_methods` the service otherwise requires. Leaving `allowed_agents` absent or empty means the network is unrestricted -- any agent that satisfies `auth_methods` may join it, which is appropriate for networks meant to be publicly joinable.
+
+```bash
+curl -X POST https://join.example.com/v1/admin/networks \
+  -H "Authorization: Bearer $JOINING_ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "happ_id": "acme-network",
+    "happ": { "name": "ACME staging environment" },
+    "roles": {
+      "main": {
+        "dna_hash": "uhC0k...",
+        "modifiers": {
+          "network_seed": "acme-network-2026"
+        }
+      }
+    },
+    "allowed_agents": ["uhCAk...progenitor..."]
+  }'
+```
+
+Response:
+```json
+{
+  "happ_id": "acme-network",
+  "happ": { "name": "ACME staging environment" },
+  "roles": { "main": { "dna_hash": "uhC0k...", "modifiers": { "network_seed": "acme-network-2026" } } },
+  "allowed_agents": ["uhCAk..."],
+  "registered_at": "2026-02-24T12:00:00Z"
+}
+```
+
+The progenitor can now join immediately with the registered network:
+
+```bash
+curl -X POST https://join.example.com/v1/join \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_key": "uhCAk...progenitor...",
+    "network": "acme-network"
+  }'
+```
+
+Registered networks are persisted using the same backend as `session.store`: `memory` networks are ephemeral and lost on restart; `sqlite` networks are written to `networks.db` alongside the sessions database. On Workers, the admin routes require manual wiring: the worker entry must construct a `KvNetworkStore` and pass it as `networkStore` in the ServiceContext; the bundled worker entry does not wire this yet. A network's `dna_hash`es must be unique across every registered network and the service's own static `roles` -- registering a duplicate is rejected with 409 `duplicate_dna_hash` (see JOINING_SERVICE_API.md Section 3.11).
+
+A service can also run **dynamic-only**: configure `network_registration` without any static `roles` in config, and the service has no roles of its own until networks are registered at runtime. Joins that omit `network` (or every network registration that gets deleted later) still succeed and provision linker/gateway URLs with no `roles` -- useful for operators who want every network onboarded through the admin API rather than baked into the service's config file.
 
 ---
 

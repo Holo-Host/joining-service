@@ -21,6 +21,8 @@ export interface ProvisionOptions {
   discover?: string;
   /** 39-byte AgentPubKey in HoloHash format (uhCAk...) */
   agentKey: string;
+  /** happ_id of a registered network to join; determines which network's roles/proofs the session receives */
+  network?: string;
   /** Lair connection options (required for agent_allow_list signing) */
   lair?: LairSignerOptions;
   /** Claims to pass with join request */
@@ -61,7 +63,7 @@ export async function provision(opts: ProvisionOptions): Promise<JoinProvision> 
   // Join
   let session: JoinSession;
   try {
-    session = await client.join(opts.agentKey, opts.claims);
+    session = await client.join(opts.agentKey, opts.claims, opts.network);
   } catch (err) {
     if (err instanceof JoiningError && err.code === 'join_rejected') {
       throw new Error(`Join rejected: ${err.message}`);

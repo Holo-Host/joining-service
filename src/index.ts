@@ -40,6 +40,10 @@ export { toLinkerRegistration, generateInviteToken, canonicalJson, verifyHeartbe
 export type { AllowedAgentStore, RegisteredAgent } from './agent-registration/index.js';
 export { MemoryAllowedAgentStore, SqliteAllowedAgentStore, KvAllowedAgentStore } from './agent-registration/index.js';
 
+// Dynamic network registration
+export type { NetworkStore, NetworkRecord } from './network-registration/index.js';
+export { MemoryNetworkStore, SqliteNetworkStore, KvNetworkStore } from './network-registration/index.js';
+
 // Membrane proof
 export type { MembraneProofGenerator } from './membrane-proof/generator.js';
 export { LairProofGenerator } from './membrane-proof/lair-signer.js';

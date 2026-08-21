@@ -109,6 +109,120 @@ describe('SqliteSessionStore', () => {
     expect(found).toBeNull();
   });
 
+  it('matches only the exact network scope', async () => {
+    await store.create(makeSession({
+      id: 'js_net_a',
+      agent_key: 'uhCAkMultiNet',
+      network: 'network-a',
+    }));
+    await store.create(makeSession({
+      id: 'js_net_b',
+      agent_key: 'uhCAkMultiNet',
+      network: 'network-b',
+    }));
+
+    const onA = await store.findByAgentKey('uhCAkMultiNet', 'network-a');
+    expect(onA!.id).toBe('js_net_a');
+
+    const onB = await store.findByAgentKey('uhCAkMultiNet', 'network-b');
+    expect(onB!.id).toBe('js_net_b');
+
+    expect(await store.findByAgentKey('uhCAkMultiNet', 'network-c')).toBeNull();
+  });
+
+  it('treats undefined network as its own scope, distinct from a named network', async () => {
+    await store.create(makeSession({
+      id: 'js_default_scope',
+      agent_key: 'uhCAkScopeAgent',
+    }));
+    await store.create(makeSession({
+      id: 'js_named_scope',
+      agent_key: 'uhCAkScopeAgent',
+      network: 'network-a',
+    }));
+
+    const defaultScope = await store.findByAgentKey('uhCAkScopeAgent');
+    expect(defaultScope!.id).toBe('js_default_scope');
+
+    const namedScope = await store.findByAgentKey('uhCAkScopeAgent', 'network-a');
+    expect(namedScope!.id).toBe('js_named_scope');
+  });
+
+  it('findAnyByAgentKey finds a session for the agent regardless of network', async () => {
+    await store.create(makeSession({
+      id: 'js_any_net',
+      agent_key: 'uhCAkAnyAgent',
+      network: 'network-a',
+    }));
+
+    const found = await store.findAnyByAgentKey('uhCAkAnyAgent');
+    expect(found!.id).toBe('js_any_net');
+  });
+
+  it('findAnyByAgentKey returns null for unknown agent key', async () => {
+    const found = await store.findAnyByAgentKey('uhCAkUnknown');
+    expect(found).toBeNull();
+  });
+
+  it('findAnyByAgentKey does not let an expired pending session on one network shadow a live ready session on another (expired session created first)', async () => {
+    const shortStore = new SqliteSessionStore(
+      join(tmpDir, 'shadow-expired-first.db'),
+      1, // 1 second pending TTL
+    );
+
+    // Backdated so it is expired, but still the most recently created row --
+    // the bug this guards against picked the newest row and bailed if it
+    // happened to be expired, ignoring an older but live ready session.
+    await shortStore.create(makeSession({
+      id: 'js_shadow_pending',
+      agent_key: 'uhCAkShadowAgent',
+      network: 'network-a',
+      status: 'pending',
+      created_at: Date.now() - 2000,
+    }));
+    await shortStore.create(makeSession({
+      id: 'js_shadow_ready',
+      agent_key: 'uhCAkShadowAgent',
+      network: 'network-b',
+      status: 'ready',
+      created_at: Date.now() - 10000,
+    }));
+
+    const found = await shortStore.findAnyByAgentKey('uhCAkShadowAgent');
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe('js_shadow_ready');
+
+    shortStore.close();
+  });
+
+  it('findAnyByAgentKey does not let an expired pending session on one network shadow a live ready session on another (expired session created last)', async () => {
+    const shortStore = new SqliteSessionStore(
+      join(tmpDir, 'shadow-expired-last.db'),
+      1, // 1 second pending TTL
+    );
+
+    await shortStore.create(makeSession({
+      id: 'js_shadow_ready2',
+      agent_key: 'uhCAkShadowAgent2',
+      network: 'network-b',
+      status: 'ready',
+      created_at: Date.now() - 10000,
+    }));
+    await shortStore.create(makeSession({
+      id: 'js_shadow_pending2',
+      agent_key: 'uhCAkShadowAgent2',
+      network: 'network-a',
+      status: 'pending',
+      created_at: Date.now() - 2000,
+    }));
+
+    const found = await shortStore.findAnyByAgentKey('uhCAkShadowAgent2');
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe('js_shadow_ready2');
+
+    shortStore.close();
+  });
+
   it('expires pending sessions after TTL', async () => {
     const shortStore = new SqliteSessionStore(
       join(tmpDir, 'short-ttl.db'),
@@ -207,5 +321,21 @@ describe('SqliteSessionStore', () => {
 
     const retrieved = await store.get('js_rejected');
     expect(retrieved!.reason).toBe('Invalid invite code');
+  });
+
+  it('round-trips the network field', async () => {
+    const session = makeSession({ id: 'js_network', network: 'acme-net' });
+    await store.create(session);
+
+    const retrieved = await store.get('js_network');
+    expect(retrieved!.network).toBe('acme-net');
+  });
+
+  it('leaves network undefined when not provided', async () => {
+    const session = makeSession({ id: 'js_no_network' });
+    await store.create(session);
+
+    const retrieved = await store.get('js_no_network');
+    expect(retrieved!.network).toBeUndefined();
   });
 });

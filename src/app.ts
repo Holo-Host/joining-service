@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { ServiceConfig } from './config.js';
-import type { AuthMethodPlugin } from './auth-methods/plugin.js';
-import type { SessionStore, ChallengeState } from './session/store.js';
+import type { ServiceConfig, RoleConfig } from './config.js';
+import type { AuthMethodPlugin, JoinContext } from './auth-methods/plugin.js';
+import type { SessionStore, SessionData, ChallengeState } from './session/store.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
-import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, RoleProvision } from './types.js';
+import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
 import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
@@ -28,6 +28,8 @@ import { createAdminLinkerRoutes } from './routes/admin-linkers.js';
 import { createLinkerRoutes } from './routes/linker-heartbeat.js';
 import type { AllowedAgentStore } from './agent-registration/store.js';
 import { createAdminAgentRoutes } from './routes/admin-agents.js';
+import type { NetworkStore, NetworkRecord } from './network-registration/store.js';
+import { createAdminNetworkRoutes, HAPP_ID_RE } from './routes/admin-networks.js';
 
 export interface ServiceContext {
   config: ServiceConfig;
@@ -38,6 +40,7 @@ export interface ServiceContext {
   hcAuthClient?: HcAuthClient;
   linkerRegistrationStore?: LinkerRegistrationStore;
   allowedAgentStore?: AllowedAgentStore;
+  networkStore?: NetworkStore;
 }
 
 /**
@@ -164,6 +167,7 @@ async function createReadySession(
   claims: Record<string, string>,
   challenges: ChallengeState[],
   options?: { skipHcAuth?: boolean },
+  network?: string,
 ): Promise<void> {
   if (!options?.skipHcAuth) {
     await notifyHcAuth(ctx, agentKey, claims);
@@ -177,6 +181,7 @@ async function createReadySession(
     challenges,
     claims,
     created_at: Date.now(),
+    network,
   });
 }
 
@@ -209,6 +214,18 @@ function usedHcAuthApproval(challenges: ChallengeState[]): boolean {
   return challenges.some((cs) => cs.challenge.type === 'hc_auth_approval');
 }
 
+/**
+ * Collapses the statically configured network's own happ id to the same
+ * (undefined) session scope as an omitted `network` -- naming it explicitly
+ * must behave exactly like omitting `network` entirely, so both spellings
+ * land in one session scope instead of splitting one agent across two
+ * "networks" that are really the same one. Shared by join and reconnect so
+ * the collapse rule can't drift between the two call sites.
+ */
+function normalizeNetwork(config: ServiceConfig, value: string | undefined): string | undefined {
+  return value === config.happ.id ? undefined : value;
+}
+
 import type { NetworkConfig } from './types.js';
 
 /** Build a NetworkConfig from service config. Returns undefined if no URLs are available. */
@@ -218,6 +235,80 @@ function buildNetworkConfig(config: ServiceConfig): NetworkConfig | undefined {
   if (config.network?.bootstrap_url) nc.bootstrap_url = config.network.bootstrap_url;
   if (config.network?.relay_url) nc.relay_url = config.network.relay_url;
   return Object.keys(nc).length > 0 ? nc : undefined;
+}
+
+/** Per-role `{ dna_modifiers }` map as returned in /v1/info responses. */
+function rolesToInfo(
+  roles: Record<string, RoleConfig> | undefined,
+): Record<string, { dna_modifiers?: RoleConfig['modifiers'] }> | undefined {
+  return roles
+    ? Object.fromEntries(
+        Object.entries(roles).map(([role, rc]) => [role, { dna_modifiers: rc.modifiers }]),
+      )
+    : undefined;
+}
+
+/**
+ * Service-level /v1/info fields that are identical regardless of which
+ * network (static or registered) the response describes -- only `happ`,
+ * `happ_bundle_url`, and `roles` vary per network.
+ */
+async function buildServiceInfoFields(ctx: ServiceContext) {
+  const { config } = ctx;
+  const registrations = await ctx.urlProvider.getLinkerRegistrations();
+  const linkerUrls = toLinkerUrls(registrations);
+  const httpGateways = await ctx.urlProvider.getHttpGateways();
+  return {
+    http_gateways: httpGateways,
+    auth_methods: config.auth_methods,
+    linker_info: linkerUrls
+      ? (config.linker_info ?? { selection_mode: 'assigned' })
+      : undefined,
+    network_config: config.network?.reveal_in_info
+      ? buildNetworkConfig(config)
+      : undefined,
+  };
+}
+
+/**
+ * The bare /v1/info response body -- also served at GET /v1/info/:happ_id
+ * when the id names the service's own statically configured happ id.
+ */
+async function buildStaticInfo(ctx: ServiceContext) {
+  const { config } = ctx;
+  return {
+    happ: {
+      id: config.happ.id,
+      name: config.happ.name,
+      description: config.happ.description,
+      icon_url: config.happ.icon_url,
+    },
+    happ_bundle_url: config.happ.happ_bundle_url,
+    roles: rolesToInfo(config.roles),
+    ...(await buildServiceInfoFields(ctx)),
+  };
+}
+
+/**
+ * Resolve what provisioning should use for a session: the named network's
+ * own roles and happ_bundle_url if it joined one (no fallback to the
+ * service's own happ_bundle_url -- a network's bundle is independent of the
+ * service's), otherwise the service's static config. Returns
+ * 'unknown_network' if the network was since deleted.
+ */
+async function resolveProvisionSource(
+  ctx: ServiceContext,
+  session: SessionData,
+): Promise<
+  | { roles: Record<string, RoleConfig> | undefined; happBundleUrl: string | undefined }
+  | 'unknown_network'
+> {
+  if (!session.network) {
+    return { roles: ctx.config.roles, happBundleUrl: ctx.config.happ.happ_bundle_url };
+  }
+  const record = await ctx.networkStore?.get(session.network);
+  if (!record) return 'unknown_network';
+  return { roles: record.roles, happBundleUrl: record.happ?.happ_bundle_url };
 }
 
 function errorJson(code: string, message: string, status: number) {
@@ -266,34 +357,51 @@ export function createApp(ctx: ServiceContext): Hono {
 
   // ---- GET /v1/info ----
   app.get('/v1/info', async (c) => {
+    return c.json(await buildStaticInfo(ctx));
+  });
+
+  // ---- GET /v1/info/:happ_id ----
+  // `/v1/info` and `/v1/info/:happ_id` are distinct path patterns that never
+  // overlap, so registration order between them doesn't matter for shadowing.
+  app.get('/v1/info/:happ_id', async (c) => {
     const { config } = ctx;
-    const registrations = await ctx.urlProvider.getLinkerRegistrations();
-    const linkerUrls = toLinkerUrls(registrations);
-    const httpGateways = await ctx.urlProvider.getHttpGateways();
+    const happId = c.req.param('happ_id');
+
+    // The statically configured network's id aliases the bare endpoint --
+    // same normalization rule as join (see POST /v1/join below).
+    if (happId === config.happ.id) {
+      return c.json(await buildStaticInfo(ctx));
+    }
+
+    // Cheap format check before the store lookup so junk ids are rejected
+    // without a store round-trip (and, on KV, without risking a key-length
+    // throw from garbage input).
+    if (!HAPP_ID_RE.test(happId)) {
+      return errorJson('unknown_network', 'network is not registered with this service', 404);
+    }
+
+    const record = ctx.networkStore ? await ctx.networkStore.get(happId) : null;
+    if (!record) {
+      return errorJson('unknown_network', 'network is not registered with this service', 404);
+    }
+
+    // A gated network's role modifiers (network_seed, etc.) are only for
+    // agents that clear its allowed_agents gate -- exposing them at an
+    // unauthenticated info endpoint would leak them to anyone who guesses
+    // or is told the happ_id, defeating the gate's purpose. Joiners who pass
+    // the gate still receive them normally at provision.
+    const gated = (record.allowed_agents?.length ?? 0) > 0;
+
     return c.json({
       happ: {
-        id: config.happ.id,
-        name: config.happ.name,
-        description: config.happ.description,
-        icon_url: config.happ.icon_url,
+        id: happId,
+        name: record.happ?.name ?? happId,
+        description: record.happ?.description,
+        icon_url: record.happ?.icon_url,
       },
-      http_gateways: httpGateways,
-      auth_methods: config.auth_methods,
-      linker_info: linkerUrls
-        ? (config.linker_info ?? { selection_mode: 'assigned' })
-        : undefined,
-      happ_bundle_url: config.happ.happ_bundle_url,
-      network_config: config.network?.reveal_in_info
-        ? buildNetworkConfig(config)
-        : undefined,
-      roles: config.roles
-        ? Object.fromEntries(
-            Object.entries(config.roles).map(([role, rc]) => [
-              role,
-              { dna_modifiers: rc.modifiers },
-            ]),
-          )
-        : undefined,
+      happ_bundle_url: record.happ?.happ_bundle_url,
+      roles: gated ? undefined : rolesToInfo(record.roles),
+      ...(await buildServiceInfoFields(ctx)),
     });
   });
 
@@ -311,12 +419,56 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('invalid_agent_key', validation.reason!, 400);
     }
 
-    // Check if agent already joined
-    const existing = await ctx.sessionStore.findByAgentKey(agent_key);
+    // Resolve the named network, if any, before touching any existing
+    // session state below -- a malformed/unregistered/disallowed `network`
+    // must not delete the caller's in-flight pending session as a side effect
+    // of a rejected request.
+    if (body.network !== undefined && typeof body.network !== 'string') {
+      return errorJson(
+        'unknown_network',
+        'network must be a string',
+        400,
+      );
+    }
+    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
+    let networkRecord: NetworkRecord | undefined;
+    if (requestedNetwork !== undefined) {
+      // Cheap format check before the store lookup so junk network names are
+      // rejected without a store round-trip.
+      const record = (ctx.networkStore && HAPP_ID_RE.test(requestedNetwork))
+        ? await ctx.networkStore.get(requestedNetwork)
+        : null;
+      if (!record) {
+        return errorJson(
+          'unknown_network',
+          'network is not registered with this service',
+          400,
+        );
+      }
+      // A network's allowed_agents restricts who may join it at all, on top
+      // of whatever auth_methods the service otherwise applies -- without
+      // this gate, any agent naming the network inherits its membrane
+      // proofs regardless of auth_methods (e.g. progenitor registration
+      // absolutely must be restricted; see issue #13).
+      if (record.allowed_agents?.length && !record.allowed_agents.includes(agent_key)) {
+        return errorJson(
+          'join_rejected',
+          'Agent is not allowed to join this network',
+          403,
+        );
+      }
+      networkRecord = record;
+    }
+    const joinContext: JoinContext = { network: networkRecord };
+
+    // Check if agent already joined this network. Scoped to (agent, network)
+    // so a session on another network neither blocks this join nor gets
+    // deleted as a stale-pending session below.
+    const existing = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
     if (existing?.status === 'ready') {
       return errorJson(
         'agent_already_joined',
-        'This agent key has already completed joining. Use POST /v1/reconnect instead.',
+        'This agent key has already completed joining this network. Use POST /v1/reconnect instead.',
         409,
       );
     }
@@ -382,7 +534,7 @@ export function createApp(ctx: ServiceContext): Hono {
       });
 
       const sessionId = generateSessionId();
-      await createReadySession(ctx, sessionId, agent_key, claims, []);
+      await createReadySession(ctx, sessionId, agent_key, claims, [], undefined, requestedNetwork);
 
       return c.json({ session: sessionId, status: 'ready' }, 201);
     }
@@ -416,6 +568,7 @@ export function createApp(ctx: ServiceContext): Hono {
               agent_key,
               claims,
               ctx.config,
+              joinContext,
             );
             for (const ch of challenges) {
               ch.group = groupId;
@@ -451,6 +604,7 @@ export function createApp(ctx: ServiceContext): Hono {
             agent_key,
             claims,
             ctx.config,
+            joinContext,
           );
           if (challenges.length === 0 && entry !== 'open' && entry !== 'hc_auth_approval') {
             // Non-open/non-hc_auth_approval method produced no challenges -- agent is not eligible
@@ -499,9 +653,15 @@ export function createApp(ctx: ServiceContext): Hono {
     const finalStatus = allSatisfied(allChallenges) ? 'ready' : status;
 
     if (finalStatus === 'ready') {
-      await createReadySession(ctx, sessionId, agent_key, claims, allChallenges, {
-        skipHcAuth: usedHcAuthApproval(allChallenges),
-      });
+      await createReadySession(
+        ctx,
+        sessionId,
+        agent_key,
+        claims,
+        allChallenges,
+        { skipHcAuth: usedHcAuthApproval(allChallenges) },
+        requestedNetwork,
+      );
     } else {
       await ctx.sessionStore.create({
         id: sessionId,
@@ -510,6 +670,7 @@ export function createApp(ctx: ServiceContext): Hono {
         challenges: allChallenges,
         claims,
         created_at: Date.now(),
+        network: requestedNetwork,
       });
     }
 
@@ -741,10 +902,19 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
+    const provisionSource = await resolveProvisionSource(ctx, session);
+    if (provisionSource === 'unknown_network') {
+      return errorJson(
+        'unknown_network',
+        'network is not registered with this service',
+        404,
+      );
+    }
+
     const linkerUrls = toLinkerUrls(await ctx.urlProvider.getLinkerRegistrations());
 
     let rolesOut: Record<string, RoleProvision> | undefined;
-    const rolesCfg = ctx.config.roles;
+    const rolesCfg = provisionSource.roles;
     if (rolesCfg && Object.keys(rolesCfg).length > 0) {
       let proofsByHash: Record<string, Uint8Array> = {};
       if (ctx.proofGenerator) {
@@ -772,7 +942,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
     return c.json({
       linker_urls: linkerUrls,
-      happ_bundle_url: ctx.config.happ.happ_bundle_url,
+      happ_bundle_url: provisionSource.happBundleUrl,
       network_config: networkConfig,
       roles: rolesOut,
     });
@@ -791,6 +961,22 @@ export function createApp(ctx: ServiceContext): Hono {
     app.route('', createAdminAgentRoutes(ctx.allowedAgentStore, ctx.config.agent_registration.admin_secret));
   }
 
+  // ---- Dynamic network registration routes ----
+  if (ctx.config.network_registration?.admin_secret && ctx.networkStore) {
+    const staticDnaHashes = Object.values(ctx.config.roles ?? {})
+      .map((rc) => rc.dna_hash)
+      .filter((hash): hash is string => hash !== undefined);
+    app.route(
+      '',
+      createAdminNetworkRoutes(ctx.networkStore, {
+        adminSecret: ctx.config.network_registration.admin_secret,
+        requireDnaHash: ctx.config.membrane_proof?.enabled === true,
+        staticHappId: ctx.config.happ.id,
+        staticDnaHashes,
+      }),
+    );
+  }
+
   // ---- POST /v1/reconnect ----
   app.post('/v1/reconnect', async (c) => {
     if (ctx.config.reconnect?.enabled === false) {
@@ -807,6 +993,26 @@ export function createApp(ctx: ServiceContext): Hono {
     const validation = validateAgentKey(agent_key);
     if (!validation.valid) {
       return errorJson('invalid_agent_key', validation.reason!, 400);
+    }
+
+    // Same validation join applies to `network` (src/app.ts join handler,
+    // just above): reject a non-string or malformed value outright rather
+    // than silently falling back to the static scope, which would hand back
+    // a *different* network's token than the one asked for -- worse than an
+    // error, since the caller has no way to notice. The format check also
+    // bounds `network` before it reaches a store key or an error message
+    // (unbounded input there breaks KV's key-size limit and bloats error
+    // bodies).
+    if (body.network !== undefined && typeof body.network !== 'string') {
+      return errorJson('unknown_network', 'network must be a string', 400);
+    }
+    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
+    if (requestedNetwork !== undefined && !HAPP_ID_RE.test(requestedNetwork)) {
+      return errorJson(
+        'unknown_network',
+        'network does not match the network-id format',
+        400,
+      );
     }
 
     if (!timestamp || !signature) {
@@ -838,8 +1044,9 @@ export function createApp(ctx: ServiceContext): Hono {
       );
     }
 
-    // Verify agent has joined
-    const session = await ctx.sessionStore.findByAgentKey(agent_key);
+    // Verify agent has joined -- linker/gateway URLs are service-wide, not
+    // per-network, so any ready session for this agent satisfies reconnect.
+    const session = await ctx.sessionStore.findAnyByAgentKey(agent_key);
     if (!session || session.status !== 'ready') {
       return errorJson(
         'agent_not_joined',
@@ -887,6 +1094,30 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
+    // Network-scoped session-token lookup -- separate from the joined-at-all
+    // gate above. That gate is intentionally network-agnostic (URLs are
+    // service-wide), but the session token to hand back is per-network, so
+    // which session comes back depends on which network was requested.
+    const scopedSession = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
+    let sessionToken: string | undefined;
+    if (scopedSession?.status === 'ready') {
+      sessionToken = scopedSession.id;
+    } else if (requestedNetwork !== undefined) {
+      // A distinct (non-static) network was named and the agent has no
+      // ready session there -- point the caller at /v1/join for that
+      // network rather than silently returning URLs with no session to
+      // provision.
+      return errorJson(
+        'agent_not_joined',
+        `This agent key has not joined network "${requestedNetwork}"`,
+        403,
+      );
+    }
+    // requestedNetwork === undefined (network omitted, or explicitly named
+    // the static network): a static-scope miss is not an error here -- omit
+    // `session` and still return URLs, preserving reconnect's original
+    // contract for agents whose only session names a non-static network.
+
     // Re-register agent with linkers (idempotent — handles linker restarts)
     try {
       await notifyLinkers(ctx, agent_key);
@@ -901,10 +1132,15 @@ export function createApp(ctx: ServiceContext): Hono {
     ]);
     const linkerUrls = toLinkerUrls(registrations);
 
-    return c.json({
+    const resp: ReconnectResponse = {
       linker_urls: linkerUrls,
       http_gateways: httpGateways,
-    });
+    };
+    if (sessionToken !== undefined) {
+      resp.session = sessionToken;
+    }
+
+    return c.json(resp);
   });
 
   return app;
