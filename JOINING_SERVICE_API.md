@@ -6,11 +6,25 @@
 
 ## Overview
 
-The Joining Service is a per-hApp REST API that brokers the onboarding flow for users of Holochain apps running in the Holo Web Conductor (HWC) browser extension. It centralizes the configuration that HWC clients need to participate in a Holochain network: linker URLs, optional membrane proofs, hApp bundle locations, and identity verification flows.
+The Joining Service is a per-hApp REST API that brokers the onboarding flow for any Holochain agent — browser-based, native, or read-only — joining a network. It centralizes the configuration a client needs to participate: identity verification, optional membrane proofs, optional linker relay URLs, optional hApp bundle locations, and optional read-only gateway URLs.
 
-Each hApp developer runs their own joining service (or uses a hosted one). The HWC client library auto-discovers it via `.well-known/holo-joining` on the app domain.
+Each hApp developer runs their own joining service (or uses a hosted one). Browser-based clients auto-discover it via `.well-known/holo-joining` on the app domain; non-browser clients (native conductors, CLI provisioning tools) are configured with the joining-service URL directly.
 
-### User Flow Summary
+### Supported Client Types
+
+Every field in the `/v1/info` and `/v1/join/{session}/provision` responses is independently optional. Clients consume only what they need:
+
+| Client Type | Typical Needs | Discovery |
+|-------------|---------------|-----------|
+| **Browser node (HWC extension)** | Linker URLs, membrane proof, hApp bundle URL, identity verification | `.well-known/holo-joining` from the app domain |
+| **Native node (desktop / CLI)** | Membrane proof only (linker not needed — direct kitsune2 networking); optionally HTTP gateway URLs | Joining-service URL configured directly |
+| **Gateway-only / browse-before-join** | HTTP gateway URLs only — no join, no proofs | `.well-known/holo-joining` or direct URL |
+
+The same endpoints serve all three; the client decides which response fields to use. A deployment that does not manage linkers simply omits `linker_urls` and `linker_info`; a deployment that does not require membrane proofs omits `membrane_proofs`; etc.
+
+### User Flow Summary (Browser Node)
+
+The canonical HWC flow exercises every part of the API. Native and gateway-only clients use a subset (skipping discovery, linker URLs, and/or `happ_bundle_url` as appropriate).
 
 ```
 First-time join:
