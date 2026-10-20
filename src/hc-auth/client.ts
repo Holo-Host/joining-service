@@ -27,9 +27,10 @@ export interface HcAuthConfig {
    */
   required?: boolean;
   /**
-   * Claim keys to forward as metadata to hc-auth (e.g. ["email", "phone"]).
+   * Claim keys to forward to hc-auth (e.g. ["email", "phone"]).
    * When set, matching claims from the join session are included in the
-   * metadata payload sent during registerAndAuthorize.
+   * metadata payload sent during registerAndAuthorize and are also written
+   * to the record's admin-only `verified` field via PUT /api/verified/{key}.
    * Default: undefined (no claims forwarded).
    */
   forward_claims?: string[];
@@ -149,6 +150,33 @@ export class HcAuthClient {
   }
 
   /**
+   * Replace the record's admin-written `verified` claims.
+   *
+   * Corresponds to PUT /api/verified/{key} (requires Bearer token). Only this
+   * route writes `verified`; the metadata sent with PUT /request-auth/{key}
+   * is caller-supplied and downstream services must not trust it.
+   * Works in any state. 404 means the key is not registered.
+   */
+  async setVerified(
+    rawPubKeyB64url: string,
+    verified: Record<string, unknown>,
+  ): Promise<void> {
+    const resp = await fetch(`${this.baseUrl}/api/verified/${rawPubKeyB64url}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: this.authHeader,
+      },
+      body: JSON.stringify(verified),
+    });
+    if (!resp.ok) {
+      throw new Error(
+        `hc-auth PUT /api/verified returned ${resp.status}: ${await resp.text()}`,
+      );
+    }
+  }
+
+  /**
    * Register a key and immediately authorize it. Idempotent.
    *
    * State machine:
@@ -156,8 +184,24 @@ export class HcAuthClient {
    *   pending    → transition (pending → authorized)
    *   authorized → no-op
    *   blocked    → transition (blocked → authorized)
+   *
+   * In every branch, including "already authorized", `verified` is then
+   * written with setVerified() when it has at least one key, so a key that
+   * joins again (reinstall, or a join from before `verified` existed) gets
+   * its verified claims refreshed. A failed write throws.
    */
   async registerAndAuthorize(
+    rawPubKeyB64url: string,
+    metadata: unknown,
+    verified?: Record<string, unknown>,
+  ): Promise<void> {
+    await this.ensureAuthorized(rawPubKeyB64url, metadata);
+    if (verified && Object.keys(verified).length > 0) {
+      await this.setVerified(rawPubKeyB64url, verified);
+    }
+  }
+
+  private async ensureAuthorized(
     rawPubKeyB64url: string,
     metadata: unknown,
   ): Promise<void> {

@@ -1106,9 +1106,13 @@ Config:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `server_url` | string | yes | Base URL of the hc-auth-server (e.g. `https://auth.example.com`) |
-| `api_token` | string | yes | Bearer token from the hc-auth-server's `API_TOKENS` config, used for admin API calls (transition, get) |
+| `api_token` | string | yes | Bearer token from the hc-auth-server's `API_TOKENS` config, used for admin API calls (transition, get, verified) |
 | `required` | boolean | no | If `true`, a failure to communicate with hc-auth blocks provisioning. Default: `false` (non-fatal — hc-auth outage does not break joining) |
-| `forward_claims` | string[] | no | Claim keys to forward as metadata to hc-auth during registration (e.g. `["email", "phone"]`). When set, matching claims from the join session are included in the metadata payload sent to `PUT /request-auth/{pubkey}`. Only useful when other auth methods collect those claims (e.g. `email_code`, `sms_code`). Default: none |
+| `forward_claims` | string[] | no | Claim keys to forward to hc-auth during registration (e.g. `["email", "phone"]`). When set, matching claims from the join session are included in the metadata payload sent to `PUT /request-auth/{pubkey}` and are also written to the record's `verified` field (see below). Only useful when other auth methods collect those claims (e.g. `email_code`, `sms_code`). Default: none |
+
+The forwarded claims are written twice. The metadata sent to `PUT /request-auth/{pubkey}` is public: anyone can call that route, so downstream services must not trust it. On every join that reaches `ready`, the service also calls the admin route `PUT /api/verified/{pubkey}` with the same claims. This replaces the record's `verified` field, the only field downstream services trust (for example, the voucher service reads `verified.email`). The write happens even when the key is already `authorized`, so a user who reinstalls with the same key, or who joined before `verified` existed, gets the field on their next join. When `hc_auth_approval` is in the method set, the service does not authorize the key itself, but it still writes `verified` when the session becomes `ready`. If the write fails and `required` is `true`, the join fails with `503 service_unavailable` and a polled session stays `pending`. If `required` is `false`, the failure is logged and the join proceeds without `verified`.
+
+`verified` is only as trustworthy as the configuration. The service copies claims by key name from the join request, so list in `forward_claims` only the claims that a configured method proves (`email` with `email_code`, `phone` with `sms_code`). A forwarded claim that no method checks is written to `verified` unproven.
 
 Example with `forward_claims` — forwarding verified email to hc-auth alongside an email code challenge:
 ```json

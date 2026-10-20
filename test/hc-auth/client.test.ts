@@ -169,4 +169,76 @@ describe('HcAuthClient.registerAndAuthorize', () => {
       newState: 'authorized',
     });
   });
+
+  it('writes verified claims even when the key is already authorized', async () => {
+    const spy = mockFetch([
+      { status: 200, body: { state: 'authorized', pubKey: 'abc123' } }, // getRecord
+      { status: 200 }, // setVerified
+    ]);
+    await makeClient().registerAndAuthorize('abc123', {}, { email: 'ada@example.com' });
+    expect(spy).toHaveBeenCalledTimes(2);
+    const [url, init] = spy.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/verified/abc123`);
+    expect(init.method).toBe('PUT');
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_TOKEN}`);
+    expect(JSON.parse(init.body as string)).toEqual({ email: 'ada@example.com' });
+  });
+
+  it('writes verified claims after registering and authorizing a new key', async () => {
+    const spy = mockFetch([
+      { status: 404 }, // getRecord
+      { status: 202 }, // requestAuth
+      { status: 200 }, // transition
+      { status: 200 }, // setVerified
+    ]);
+    await makeClient().registerAndAuthorize('abc123', { happ_id: 't' }, { email: 'ada@example.com' });
+    expect(spy).toHaveBeenCalledTimes(4);
+    const [url] = spy.mock.calls[3] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/verified/abc123`);
+  });
+
+  it('writes verified claims after transitioning a blocked key', async () => {
+    const spy = mockFetch([
+      { status: 200, body: { state: 'blocked', pubKey: 'abc123' } },
+      { status: 200 }, // transition
+      { status: 200 }, // setVerified
+    ]);
+    await makeClient().registerAndAuthorize('abc123', {}, { email: 'ada@example.com' });
+    expect(spy).toHaveBeenCalledTimes(3);
+    const [url] = spy.mock.calls[2] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/verified/abc123`);
+  });
+
+  it('throws when the verified write fails, so a required hc_auth blocks the join', async () => {
+    mockFetch([
+      { status: 200, body: { state: 'authorized', pubKey: 'abc123' } },
+      { status: 500, body: 'boom' },
+    ]);
+    await expect(
+      makeClient().registerAndAuthorize('abc123', {}, { email: 'x' }),
+    ).rejects.toThrow('/api/verified');
+  });
+
+  it('skips the verified write when there is nothing to verify', async () => {
+    const spy = mockFetch([{ status: 200, body: { state: 'authorized', pubKey: 'abc123' } }]);
+    await makeClient().registerAndAuthorize('abc123', {}, {});
+    expect(spy).toHaveBeenCalledOnce();
+  });
+});
+
+describe('HcAuthClient.setVerified', () => {
+  it('sends PUT /api/verified/{key} with Bearer token and the verified object', async () => {
+    const spy = mockFetch([{ status: 200 }]);
+    await makeClient().setVerified('abc123', { email: 'ada@example.com' });
+    const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/verified/abc123`);
+    expect(init.method).toBe('PUT');
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_TOKEN}`);
+    expect(JSON.parse(init.body as string)).toEqual({ email: 'ada@example.com' });
+  });
+
+  it('throws on 404 (no record) and other non-2xx', async () => {
+    mockFetch([{ status: 404, body: '' }]);
+    await expect(makeClient().setVerified('abc123', { email: 'x' })).rejects.toThrow('404');
+  });
 });
