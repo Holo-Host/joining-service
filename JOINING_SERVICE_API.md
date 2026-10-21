@@ -230,6 +230,8 @@ The client sends its agent key and optional identity claims. The server determin
 | `claims.evm_address` | string | no | EVM wallet address (0x-prefixed, checksummed) |
 | `claims.solana_address` | string | no | Solana wallet address (base58) |
 | `claims.invite_code` | string | no | Pre-issued invite code |
+| `timestamp` | string (ISO 8601) | with `signature` | Signs the join as for reconnect (Section 3.6). Required by `didit_with_email`. |
+| `signature` | string | with `timestamp` | Base64 ed25519 signature of the exact `timestamp` string by `agent_key`. A bad pair is refused before any session is read or changed. |
 | `network` | string | no | `happ_id` of a registered network (see Section 3.11 for registration), or the service's own statically configured happ id (`happ.id` in config). Naming the statically configured happ id is treated exactly as omitting `network` -- both land the session in the same scope and receive the service's static `roles` at provision. If present but not a string, not matching the happ_id format, or not registered with the service (and not the static happ id), the join is rejected with 400 `unknown_network`. If the named network has a non-empty `allowed_agents` and `agent_key` is not in it, the join is rejected with 403 `join_rejected` -- see Section 3.11. |
 
 **Response** (`201 Created`) — verification required:
@@ -293,6 +295,8 @@ The client sends its agent key and optional identity claims. The server determin
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `invalid_signature` | Only one of `timestamp` and `signature` was sent, or the signature does not verify against `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed or outside `reconnect.timestamp_tolerance_seconds` of server time |
 | 400 | `unknown_network` | `network` value is not a string, does not match the network-id format, or names a network not registered with this service |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
 | 403 | `join_rejected` | Join was rejected (agent not on the named network's `allowed_agents`, agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
@@ -864,6 +868,54 @@ The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/netwo
 
 **`network_config` is service-wide**: `network_config` (bootstrap/relay/auth-server URLs, see Section 3.5) comes from the service's own config, not from a network registration -- it is identical for every session regardless of which `network` was joined. `roles` and `happ_bundle_url` (at both `/v1/info/:happ_id` and `GET /v1/join/{session}/provision`) come from the network's own registration instead, with no fallback to the service's static config.
 
+### 3.16 `POST /v1/join/resume` — Resume a Join
+
+The way back into a join for a client that lost its session token, for example after a restart or a crash before it saved the token. The agent proves key ownership exactly as for reconnect (Section 3.6), and the signature is checked before any session is looked up. Resume sends no email and starts nothing.
+
+**Request**:
+```json
+{
+  "agent_key": "uhCAk...",
+  "timestamp": "2026-10-21T14:02:11Z",
+  "signature": "base64-encoded-ed25519-signature-of-timestamp",
+  "network": "my-network"
+}
+```
+
+`network` selects the session scope as in Section 3.6.
+
+**Response** (`200 OK`) — a join is in progress. `challenges` and `poll_interval_ms` are as `GET /v1/join/{session}/status` returns them:
+```json
+{
+  "session": "js_a1b2c3d4e5f6",
+  "status": "pending",
+  "challenges": [
+    { "id": "ch_email_1", "type": "email_code", "description": "Enter the 6-digit code sent to u***@example.com", "completed": false }
+  ],
+  "poll_interval_ms": 2000
+}
+```
+
+**Response** (`200 OK`) — the join was rejected:
+```json
+{ "session": "js_a1b2c3d4e5f6", "status": "rejected", "reason": "Agent blocked by administrator" }
+```
+
+A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`.
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `invalid_json` | The body is not a JSON object |
+| 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed or outside `reconnect.timestamp_tolerance_seconds` of server time |
+| 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
+| 404 | `join_not_found` | No session for this agent key in this scope. Start a join with `POST /v1/join`. |
+| 409 | `agent_already_joined` | The session is ready, before or after this call. Use `POST /v1/reconnect`, then provision. |
+| 503 | `service_unavailable` | Making the session ready failed at a required hc-auth step. The session stays pending. |
+
 ---
 
 ## 4. Client Integration
@@ -884,7 +936,7 @@ Two pieces of purely local state decide which endpoint to call: whether an agent
 |----------|---------|-----------|
 | `200` with `session` | The agent has a ready session on the requested network | `GET /v1/join/{session}/provision` (Section 3.5), then install |
 | `200` without `session` | `network` was omitted or named the statically configured network, and that scope has no ready session | `POST /v1/join` |
-| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join` |
+| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join/resume` (Section 3.16). On `404 join_not_found`, `POST /v1/join` |
 
 The provision call is the same one a fresh join would make, and it is repeatable: on the success path it writes no session state and mints a fresh membrane proof with a new nonce and timestamp per call. A client that crashes again partway through installing can call it again with the same token.
 
@@ -995,11 +1047,13 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
-- The server does NOT verify private key ownership — that proof happens at the Holochain network level during genesis and all subsequent signed actions.
+- An unsigned join does not prove private key ownership. That proof happens at the Holochain network level during genesis and all subsequent signed actions. A signed join (Section 3.2) and resume (Section 3.16) do prove it.
 
 ### Reconnect Replay Window
 
 `POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting any timestamp within `reconnect.timestamp_tolerance_seconds` of server time (default 300). Ready sessions do not expire, so a reconnect request observed anywhere — a proxy log, a debug capture, a compromised client — can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
+
+A signed join and `POST /v1/join/resume` (Section 3.16) carry the same pair and replay the same way, and a pair signed for one of the three routes is accepted by the others. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with any claims, replacing a pending one.
 
 Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to widen the signed payload beyond the bare timestamp — covering at least the agent key and a server-issued nonce — so that a captured signature cannot be replayed at all.
 
@@ -1532,6 +1586,9 @@ interface JoinRequest {
   claims?: Record<string, string>;
   /** Named network to join. Must be registered with the service (see network_registration). */
   network?: string;
+  /** Signs the join as for reconnect. Required by didit_with_email. */
+  timestamp?: string;
+  signature?: string;
 }
 
 interface JoinResponse {
@@ -1550,6 +1607,23 @@ interface Challenge {
   completed?: boolean;
   /** Challenges sharing the same group are OR alternatives. */
   group?: string;
+}
+
+// --- /v1/join/resume ---
+
+interface ResumeRequest {
+  agent_key: string;
+  timestamp: string;
+  signature: string;
+  network?: string;
+}
+
+interface ResumeResponse {
+  session: string;
+  status: 'pending' | 'rejected';
+  challenges?: Challenge[];
+  reason?: string;
+  poll_interval_ms?: number;
 }
 
 // --- /v1/join/{session}/verify ---

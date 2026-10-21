@@ -18,7 +18,8 @@ import type { AuthMethodPlugin } from '../src/auth-methods/plugin.js';
 import type { HcAuthClient } from '../src/hc-auth/index.js';
 import type { AuthMethod, AuthMethodEntry } from '../src/types.js';
 import type { Hono } from 'hono';
-import { encodeHashToBase64, dhtLocationFrom32 } from '../src/utils.js';
+import * as ed from '@noble/ed25519';
+import { encodeHashToBase64, dhtLocationFrom32, agentPubKeyFrom32 } from '../src/utils.js';
 import { MemoryAllowedAgentStore } from '../src/agent-registration/memory-store.js';
 import type { AllowedAgentStore } from '../src/agent-registration/store.js';
 import { MemoryNetworkStore } from '../src/network-registration/memory-store.js';
@@ -60,6 +61,34 @@ export function fakeDnaHash(seed = 0): string {
   bytes.set(core, 3);
   bytes.set(loc, 35);
   return encodeHashToBase64(bytes);
+}
+
+/** A real ed25519 agent key, and a fresh `{timestamp, signature}` pair it signed. */
+export async function signingAgent(): Promise<{
+  agentKey: string;
+  sign: (timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
+}> {
+  const privateKey = ed.utils.randomPrivateKey();
+  const agentKey = encodeHashToBase64(agentPubKeyFrom32(await ed.getPublicKeyAsync(privateKey)));
+  return {
+    agentKey,
+    sign: async (timestamp = new Date().toISOString()) => {
+      const signature = await ed.signAsync(new TextEncoder().encode(timestamp), privateKey);
+      return { timestamp, signature: Buffer.from(signature).toString('base64') };
+    },
+  };
+}
+
+export function postJson(
+  request: TestApp['request'],
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  return request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 export interface TestApp {

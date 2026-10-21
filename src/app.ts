@@ -321,6 +321,139 @@ function errorJson(code: string, message: string, status: number) {
   );
 }
 
+/** The `agent_key` and normalized `network` of a signed request, or the 400 that refuses them. */
+function signedRequestScope(
+  ctx: ServiceContext,
+  body: { agent_key?: unknown; network?: unknown },
+): { agentKey: string; network: string | undefined } | Response {
+  const agentKey = body.agent_key;
+  if (!agentKey) {
+    return errorJson('invalid_agent_key', 'agent_key is required', 400);
+  }
+
+  const validation = validateAgentKey(agentKey as string);
+  if (!validation.valid) {
+    return errorJson('invalid_agent_key', validation.reason!, 400);
+  }
+
+  // Refused rather than falling back to the static scope, which would hand
+  // back a different network's session than the one asked for. The format
+  // check also bounds `network` before it reaches a KV key or an error body.
+  if (body.network !== undefined && typeof body.network !== 'string') {
+    return errorJson('unknown_network', 'network must be a string', 400);
+  }
+  const network = normalizeNetwork(ctx.config, body.network as string | undefined);
+  if (network !== undefined && !HAPP_ID_RE.test(network)) {
+    return errorJson(
+      'unknown_network',
+      'network does not match the network-id format',
+      400,
+    );
+  }
+  return { agentKey: agentKey as string, network };
+}
+
+/** Refuses a missing timestamp or signature, or a malformed or stale timestamp. */
+function timestampError(
+  ctx: ServiceContext,
+  timestamp: unknown,
+  signature: unknown,
+): Response | null {
+  if (!timestamp || !signature) {
+    return errorJson(
+      'invalid_signature',
+      'timestamp and signature are required',
+      400,
+    );
+  }
+
+  const toleranceSeconds =
+    ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
+  const tsDate = new Date(timestamp as string);
+  if (isNaN(tsDate.getTime())) {
+    return errorJson(
+      'timestamp_out_of_range',
+      'Invalid timestamp format',
+      400,
+    );
+  }
+
+  const drift = Math.abs(Date.now() - tsDate.getTime());
+  if (drift > toleranceSeconds * 1000) {
+    return errorJson(
+      'timestamp_out_of_range',
+      `Timestamp is ${Math.round(drift / 1000)}s from server time (max ${toleranceSeconds}s)`,
+      400,
+    );
+  }
+  return null;
+}
+
+/** Whether `signature` is the agent key's ed25519 signature over the exact `timestamp` string. */
+async function signedByAgent(
+  agentKey: string,
+  timestamp: string,
+  signature: string,
+): Promise<boolean> {
+  const sigBytes = fromBase64(signature);
+  const msgBytes = new TextEncoder().encode(timestamp);
+  // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey
+  // (skip 3-byte HoloHash prefix, take 32 bytes, skip 4-byte DHT location)
+  const agentKeyBytes = decodeHashFromBase64(agentKey);
+  const publicKey = agentKeyBytes.slice(3, 35);
+
+  try {
+    return await ed.verifyAsync(sigBytes, msgBytes, publicKey);
+  } catch {
+    return false;
+  }
+}
+
+async function signatureError(
+  ctx: ServiceContext,
+  agentKey: string,
+  timestamp: unknown,
+  signature: unknown,
+): Promise<Response | null> {
+  if (typeof timestamp !== 'string' || typeof signature !== 'string') {
+    return errorJson('invalid_signature', 'timestamp and signature are required', 400);
+  }
+  const stale = timestampError(ctx, timestamp, signature);
+  if (stale) return stale;
+  if (await signedByAgent(agentKey, timestamp, signature)) return null;
+  return errorJson(
+    'invalid_signature',
+    'Signature does not verify against agent key',
+    400,
+  );
+}
+
+function pendingView(session: SessionData) {
+  return {
+    challenges: session.challenges.map((cs) => ({
+      ...stripInternal(cs.challenge),
+      completed: cs.completed,
+    })),
+    poll_interval_ms: 2000,
+  };
+}
+
+/**
+ * Makes ready a pending session whose requirements are all met, through the
+ * hc-auth and linker steps every ready path takes, saving `ready` last. A
+ * failed required step leaves the session pending for the next call to retry.
+ */
+async function completePendingJoin(ctx: ServiceContext, session: SessionData): Promise<void> {
+  if (!usedHcAuthApproval(session.challenges)) {
+    await notifyHcAuth(ctx, session.agent_key, session.claims);
+  }
+  await notifyLinkers(ctx, session.agent_key);
+  await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
+}
+
+const ALREADY_JOINED =
+  'This agent key has already completed joining this network. Use POST /v1/reconnect instead.';
+
 export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
 
@@ -419,6 +552,11 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('invalid_agent_key', validation.reason!, 400);
     }
 
+    if (body.timestamp !== undefined || body.signature !== undefined) {
+      const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature);
+      if (refused) return refused;
+    }
+
     // Resolve the named network, if any, before touching any existing
     // session state below -- a malformed/unregistered/disallowed `network`
     // must not delete the caller's in-flight pending session as a side effect
@@ -466,11 +604,7 @@ export function createApp(ctx: ServiceContext): Hono {
     // deleted as a stale-pending session below.
     const existing = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
     if (existing?.status === 'ready') {
-      return errorJson(
-        'agent_already_joined',
-        'This agent key has already completed joining this network. Use POST /v1/reconnect instead.',
-        409,
-      );
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
     }
 
     // Delete any stale pending session for this agent
@@ -851,11 +985,7 @@ export function createApp(ctx: ServiceContext): Hono {
     const resp: Record<string, unknown> = { status: session.status };
 
     if (session.status === 'pending') {
-      resp.challenges = session.challenges.map((cs) => ({
-        ...stripInternal(cs.challenge),
-        completed: cs.completed,
-      }));
-      resp.poll_interval_ms = 2000;
+      Object.assign(resp, pendingView(session));
     }
 
     if (session.status === 'rejected' && session.reason) {
@@ -977,6 +1107,40 @@ export function createApp(ctx: ServiceContext): Hono {
     );
   }
 
+  // ---- POST /v1/join/resume ----
+  app.post('/v1/join/resume', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== 'object') {
+      return errorJson('invalid_json', 'Request body must be a JSON object', 400);
+    }
+    const scope = signedRequestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const refused = await signatureError(ctx, scope.agentKey, body.timestamp, body.signature);
+    if (refused) return refused;
+
+    const session = await ctx.sessionStore.findByAgentKey(scope.agentKey, scope.network);
+    if (!session) {
+      return errorJson(
+        'join_not_found',
+        'This agent key has no join in progress. Start one with POST /v1/join.',
+        404,
+      );
+    }
+
+    if (session.status === 'pending' && allSatisfied(session.challenges)) {
+      await completePendingJoin(ctx, session);
+      session.status = 'ready';
+    }
+
+    if (session.status === 'ready') {
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
+    }
+    if (session.status === 'rejected') {
+      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
+    }
+    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+  });
+
   // ---- POST /v1/reconnect ----
   app.post('/v1/reconnect', async (c) => {
     if (ctx.config.reconnect?.enabled === false) {
@@ -984,65 +1148,14 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     const body = await c.req.json();
-    const { agent_key, timestamp, signature } = body;
+    const { timestamp, signature } = body;
 
-    if (!agent_key) {
-      return errorJson('invalid_agent_key', 'agent_key is required', 400);
-    }
+    const scope = signedRequestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const { agentKey: agent_key, network: requestedNetwork } = scope;
 
-    const validation = validateAgentKey(agent_key);
-    if (!validation.valid) {
-      return errorJson('invalid_agent_key', validation.reason!, 400);
-    }
-
-    // Same validation join applies to `network` (src/app.ts join handler,
-    // just above): reject a non-string or malformed value outright rather
-    // than silently falling back to the static scope, which would hand back
-    // a *different* network's token than the one asked for -- worse than an
-    // error, since the caller has no way to notice. The format check also
-    // bounds `network` before it reaches a store key or an error message
-    // (unbounded input there breaks KV's key-size limit and bloats error
-    // bodies).
-    if (body.network !== undefined && typeof body.network !== 'string') {
-      return errorJson('unknown_network', 'network must be a string', 400);
-    }
-    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
-    if (requestedNetwork !== undefined && !HAPP_ID_RE.test(requestedNetwork)) {
-      return errorJson(
-        'unknown_network',
-        'network does not match the network-id format',
-        400,
-      );
-    }
-
-    if (!timestamp || !signature) {
-      return errorJson(
-        'invalid_signature',
-        'timestamp and signature are required',
-        400,
-      );
-    }
-
-    // Validate timestamp is within tolerance
-    const toleranceSeconds =
-      ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
-    const tsDate = new Date(timestamp);
-    if (isNaN(tsDate.getTime())) {
-      return errorJson(
-        'timestamp_out_of_range',
-        'Invalid timestamp format',
-        400,
-      );
-    }
-
-    const drift = Math.abs(Date.now() - tsDate.getTime());
-    if (drift > toleranceSeconds * 1000) {
-      return errorJson(
-        'timestamp_out_of_range',
-        `Timestamp is ${Math.round(drift / 1000)}s from server time (max ${toleranceSeconds}s)`,
-        400,
-      );
-    }
+    const stale = timestampError(ctx, timestamp, signature);
+    if (stale) return stale;
 
     // Verify agent has joined -- linker/gateway URLs are service-wide, not
     // per-network, so any ready session for this agent satisfies reconnect.
@@ -1055,22 +1168,7 @@ export function createApp(ctx: ServiceContext): Hono {
       );
     }
 
-    // Verify ed25519 signature of the timestamp string
-    const sigBytes = fromBase64(signature);
-    const msgBytes = new TextEncoder().encode(timestamp);
-    // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey
-    // (skip 3-byte HoloHash prefix, take 32 bytes, skip 4-byte DHT location)
-    const agentKeyBytes = decodeHashFromBase64(agent_key);
-    const publicKey = agentKeyBytes.slice(3, 35);
-
-    let valid: boolean;
-    try {
-      valid = await ed.verifyAsync(sigBytes, msgBytes, publicKey);
-    } catch {
-      valid = false;
-    }
-
-    if (!valid) {
+    if (!(await signedByAgent(agent_key, timestamp, signature))) {
       return errorJson(
         'invalid_signature',
         'Signature does not verify against agent key',

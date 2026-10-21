@@ -79,6 +79,25 @@ export interface JoinRequest {
   claims?: Record<string, string>;
   /** Named network to join. Must be registered with the service (see network_registration). */
   network?: string;
+  /** ISO 8601 time the agent signed, sent with `signature`. */
+  timestamp?: string;
+  /** Base64 ed25519 signature of `timestamp` by `agent_key`. Required by didit_with_email. */
+  signature?: string;
+}
+
+export interface ResumeRequest {
+  agent_key: string;
+  timestamp: string;
+  signature: string;
+  network?: string;
+}
+
+export interface ResumeResponse {
+  session: string;
+  status: 'pending' | 'rejected';
+  challenges?: Challenge[];
+  reason?: string;
+  poll_interval_ms?: number;
 }
 
 export interface JoinResponse {
