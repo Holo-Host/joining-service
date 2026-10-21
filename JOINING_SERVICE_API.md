@@ -991,7 +991,7 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 ### Session Scoping
 - Each session is bound to the `agent_key` that created it. Provision data is only issued for that agent.
 - Session tokens: cryptographically random, at least 128 bits of entropy, prefixed `js_`.
-- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire.
+- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire. A pending session that holds a `didit_with_email` challenge lives until that challenge's `expires_at` instead, and no write moves it.
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).

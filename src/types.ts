@@ -99,6 +99,22 @@ export interface Challenge {
   group?: string;
 }
 
+/** `metadata.state` of a `didit_with_email` challenge. */
+export type DiditWithEmailState =
+  | 'link_sent'
+  | 'in_progress'
+  | 'in_review'
+  | 'declined'
+  | 'expired'
+  | 'approved';
+
+/** `metadata` of a `didit_with_email` challenge, exactly. */
+export interface DiditWithEmailMetadata {
+  state: DiditWithEmailState;
+  /** When `POST /v1/join/{session}/resend` next accepts this challenge. */
+  resend_available_at: string;
+}
+
 export interface VerifyRequest {
   challenge_id: string;
   response: string;

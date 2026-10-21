@@ -2,13 +2,19 @@ import { vi } from 'vitest';
 import type { KVNamespace } from '../../src/urls/kv.js';
 import type { LinkerInvite, RegisteredLinker } from '../../src/linker-registration/types.js';
 
-export function createMockKV(): KVNamespace & { store: Map<string, { value: string; expirationTtl?: number }> } {
-  const store = new Map<string, { value: string; expirationTtl?: number }>();
+interface MockKvEntry {
+  value: string;
+  expirationTtl?: number;
+  expiration?: number;
+}
+
+export function createMockKV(): KVNamespace & { store: Map<string, MockKvEntry> } {
+  const store = new Map<string, MockKvEntry>();
   return {
     store,
     get: vi.fn(async (key: string) => store.get(key)?.value ?? null),
-    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => {
-      store.set(key, { value, expirationTtl: opts?.expirationTtl });
+    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number; expiration?: number }) => {
+      store.set(key, { value, expirationTtl: opts?.expirationTtl, expiration: opts?.expiration });
     }),
     delete: vi.fn(async (key: string) => {
       store.delete(key);
