@@ -10,5 +10,6 @@ export { JoiningFlowSl } from './joining-flow-sl.js';
 // Re-export event detail types from headless components
 export type { ClaimsSubmittedDetail } from '../joining-claims-form.js';
 export type { ChallengeResponseDetail } from '../joining-challenge-dialog.js';
+export type { ChallengeResendDetail } from '../link-challenge.js';
 export type { JoiningStatusValue } from '../joining-status.js';
 export type { JoinCompleteDetail, JoinErrorDetail } from '../joining-flow.js';

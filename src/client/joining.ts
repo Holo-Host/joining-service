@@ -12,10 +12,14 @@ import type {
   JoinProvision,
   ReconnectResponse,
   JoinResponse,
+  ResumeResponse,
   VerifyResponse,
   StatusResponse,
   ErrorResponse,
 } from '../types.js';
+
+/** Signs an ISO 8601 timestamp string with the agent's ed25519 private key, returning the signature bytes. */
+export type SignTimestamp = (timestamp: string) => Promise<Uint8Array>;
 
 // ---- Error class ----
 
@@ -99,7 +103,25 @@ export class JoinSession {
       await throwJoiningError(res);
     }
 
-    const body = await res.json() as StatusResponse;
+    return this.withStatus(await res.json() as StatusResponse);
+  }
+
+  /** Emails a `didit_with_email` challenge's link again. Earlier links keep working. */
+  async resend(challengeId: string): Promise<JoinSession> {
+    const res = await fetch(`${this.baseUrl}/join/${this.sessionToken}/resend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_id: challengeId }),
+    });
+
+    if (!res.ok) {
+      await throwJoiningError(res);
+    }
+
+    return this.withStatus(await res.json() as StatusResponse);
+  }
+
+  private withStatus(body: StatusResponse): JoinSession {
     return new JoinSession(
       this.baseUrl,
       this.sessionToken,
@@ -196,22 +218,23 @@ export class JoiningClient {
    *   scope as an omitted `network`); pass `null` to explicitly suppress the
    *   discovered default and send no `network` at all; pass a string to
    *   override discovery with that network.
+   * @param signTimestamp - Signs the join as for `reconnect()`. Required by
+   *   `didit_with_email` services.
    * @returns A JoinSession — check `.status` to determine next steps
    */
   async join(
     agentKey: string,
     claims?: Record<string, string>,
     network?: string | null,
+    signTimestamp?: SignTimestamp,
   ): Promise<JoinSession> {
     const body: Record<string, unknown> = { agent_key: agentKey };
     if (claims && Object.keys(claims).length > 0) {
       body.claims = claims;
     }
-    // undefined -> fall back to the discovered happ_id; null -> explicit
-    // opt-out (send no network); a string -> use it as-is.
-    const resolvedNetwork = network === undefined ? this.discoveredHappId : network;
-    if (resolvedNetwork) {
-      body.network = resolvedNetwork;
+    this.addNetwork(body, network);
+    if (signTimestamp) {
+      Object.assign(body, await signedTimestamp(signTimestamp));
     }
 
     const res = await fetch(`${this.baseUrl}/join`, {
@@ -257,14 +280,10 @@ export class JoiningClient {
    */
   async reconnect(
     agentKey: string,
-    signTimestamp: (timestamp: string) => Promise<Uint8Array>,
+    signTimestamp: SignTimestamp,
     network?: string,
   ): Promise<ReconnectResponse> {
-    const timestamp = new Date().toISOString();
-    const signatureBytes = await signTimestamp(timestamp);
-    const signature = uint8ArrayToBase64(signatureBytes);
-
-    const body: Record<string, unknown> = { agent_key: agentKey, timestamp, signature };
+    const body: Record<string, unknown> = { agent_key: agentKey, ...(await signedTimestamp(signTimestamp)) };
     if (network !== undefined) {
       body.network = network;
     }
@@ -299,7 +318,7 @@ export class JoiningClient {
    */
   async reconnectAndProvision(
     agentKey: string,
-    signTimestamp: (timestamp: string) => Promise<Uint8Array>,
+    signTimestamp: SignTimestamp,
     network?: string,
   ): Promise<{ reconnect: ReconnectResponse; provision?: JoinProvision }> {
     const reconnect = await this.reconnect(agentKey, signTimestamp, network);
@@ -312,13 +331,62 @@ export class JoiningClient {
     return { reconnect, provision };
   }
 
+  /**
+   * Finds this agent's join after the session token was lost, for example
+   * to a restart. Throws `JoiningError` `join_not_found` (404) when there
+   * is none, and `agent_already_joined` (409) when it is ready.
+   *
+   * @param network - Selects the session scope exactly as for `join()`.
+   */
+  async resume(
+    agentKey: string,
+    signTimestamp: SignTimestamp,
+    network?: string | null,
+  ): Promise<JoinSession> {
+    const body: Record<string, unknown> = { agent_key: agentKey, ...(await signedTimestamp(signTimestamp)) };
+    this.addNetwork(body, network);
+
+    const res = await fetch(`${this.baseUrl}/join/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      await throwJoiningError(res);
+    }
+
+    const data = await res.json() as ResumeResponse;
+    return new JoinSession(
+      this.baseUrl,
+      data.session,
+      data.status,
+      data.challenges,
+      data.reason,
+      data.poll_interval_ms,
+    );
+  }
+
   /** The resolved base URL of this joining service. */
   get url(): string {
     return this.baseUrl;
   }
+
+  /** undefined falls back to the discovered happ_id, null sends no network, and a string is sent as-is. */
+  private addNetwork(body: Record<string, unknown>, network: string | null | undefined): void {
+    const resolvedNetwork = network === undefined ? this.discoveredHappId : network;
+    if (resolvedNetwork) {
+      body.network = resolvedNetwork;
+    }
+  }
 }
 
 // ---- Helpers ----
+
+async function signedTimestamp(sign: SignTimestamp): Promise<{ timestamp: string; signature: string }> {
+  const timestamp = new Date().toISOString();
+  return { timestamp, signature: uint8ArrayToBase64(await sign(timestamp)) };
+}
 
 async function throwJoiningError(res: Response): Promise<never> {
   let code = 'unknown_error';

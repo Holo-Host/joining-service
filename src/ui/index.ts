@@ -10,5 +10,7 @@ export type { ChallengeResponseDetail } from './joining-challenge-dialog.js';
 export { JoiningStatus } from './joining-status.js';
 export type { JoiningStatusValue } from './joining-status.js';
 
+export type { ChallengeResendDetail } from './link-challenge.js';
+
 export { JoiningFlow } from './joining-flow.js';
 export type { JoinCompleteDetail, JoinErrorDetail } from './joining-flow.js';

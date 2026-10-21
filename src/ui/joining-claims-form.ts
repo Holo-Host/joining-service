@@ -1,6 +1,7 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { AuthMethodEntry, AuthMethod } from '../types.js';
+import { LINK_CLAIM_INPUT } from './link-challenge.js';
 
 /** Methods that require no user input. */
 const AUTO_METHODS: Set<AuthMethod> = new Set([
@@ -34,6 +35,7 @@ const CLAIM_INPUT: Record<string, { label: string; type: string; placeholder: st
     claimKey: 'phone',
     description: 'To join this network, please provide your phone number. A verification code will be sent to you.',
   },
+  didit_with_email: LINK_CLAIM_INPUT,
 };
 
 export interface ClaimsSubmittedDetail {

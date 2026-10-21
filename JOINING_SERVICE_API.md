@@ -978,7 +978,7 @@ Two pieces of purely local state decide which endpoint to call: whether an agent
 |----------|---------|-----------|
 | `200` with `session` | The agent has a ready session on the requested network | `GET /v1/join/{session}/provision` (Section 3.5), then install |
 | `200` without `session` | `network` was omitted or named the statically configured network, and that scope has no ready session | `POST /v1/join` |
-| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join/resume` (Section 3.16). On `404 join_not_found`, `POST /v1/join` |
+| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join/resume` (Section 3.16), then poll a pending join's status. On `404 join_not_found`, `POST /v1/join` |
 
 The provision call is the same one a fresh join would make, and it is repeatable: on the success path it writes no session state and mints a fresh membrane proof with a new nonce and timestamp per call. A client that crashes again partway through installing can call it again with the same token.
 
@@ -996,7 +996,7 @@ A client must record the agent-key-to-hApp association in local storage **before
 
 This is a requirement rather than advice because only one of the two orders is achievable. Local write, then remote call: whenever the process dies, the key is on disk, and the decision tree in Section 4.1 finds it and recovers. Remote call, then local write: the interval between the server committing the session and the client's write reaching disk belongs to neither party, and nothing the client can do closes it. Persisting the session token instead hits the same wall from a worse position — the token does not exist until the response arrives, so it can only be written after the state it is meant to recover already exists on the server.
 
-What this ordering protects is not identity. A client that joins, crashes, and finds no recorded key on its next run generates a new one; the abandoned key has no chain and no cells, so nothing is forked and nothing is corrupt. What it loses is the join. `409 agent_already_joined` is scoped to the agent-key-plus-network pair (Section 3.2), so the ready session now belongs to a key the client can no longer name, and the new key has to clear authentication from the start. Where that means another invite code, the cost is real: the reference `invite_code` method consumes a code on first successful use, so an agent whose only credential was a single-use code, with no operator to issue a replacement, cannot join at all.
+What this ordering protects is not identity. A client that joins, crashes, and finds no recorded key on its next run generates a new one; the abandoned key has no chain and no cells, so nothing is forked and nothing is corrupt. What it loses is the join. `409 agent_already_joined` is scoped to the agent-key-plus-network pair (Section 3.2), so the ready session now belongs to a key the client can no longer name, and the new key has to clear authentication from the start. For `didit_with_email` that means a new identity verification, since an approval completes only the join of the key it names. Where that means another invite code, the cost is real: the reference `invite_code` method consumes a code on first successful use, so an agent whose only credential was a single-use code, with no operator to issue a replacement, cannot join at all.
 
 ---
 

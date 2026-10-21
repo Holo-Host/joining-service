@@ -124,11 +124,33 @@ if (provision.roles) {
 
 The same holds for `/v1/info`: `linker_info` is absent when the service does not manage linker URLs, so check it before offering a linker-related choice to the user.
 
+### Identity verification by email link
+
+A service that offers `didit_with_email` needs a signed join. Pass the same `signTimestamp` callback that `reconnect()` takes. The challenge never takes a `verify()`: the person opens the emailed link on any device, and the join becomes ready once Didit approves. Poll until then, with no attempt limit, and offer a resend from `metadata.resend_available_at`:
+
+```ts
+let session = await client.join(agentKey, { email }, undefined, signTimestamp);
+
+while (session.status === 'pending') {
+  showWaiting(session.challenges); // metadata.state: link_sent, in_progress, in_review, declined, expired or approved
+  await sleep(session.pollIntervalMs ?? 5000);
+  session = await session.pollStatus();
+}
+
+// The resend button's handler, enabled once resend_available_at has passed.
+// It throws JoiningError 429 when the email limits refuse it.
+async function onResend(challengeId: string) {
+  await session.resend(challengeId);
+}
+```
+
 ### Recovery
 
 An agent that joined and then crashed before installing cannot join again: `POST /v1/join` answers `409 agent_already_joined`. `reconnect(agentKey, signTimestamp, network?)` recovers the session token by proving key possession instead, and `reconnectAndProvision(agentKey, signTimestamp, network?)` does that and fetches the provision in one call. `signTimestamp` receives an ISO 8601 string and returns the raw ed25519 signature bytes; signing works before any app is installed, since the key is in lair as soon as `generateAgentPubKey` returns.
 
 The `network` argument follows the same three forms as `join()`, and should match whichever the original join used.
+
+A join that was still pending when the app stopped comes back through `resume(agentKey, signTimestamp, network?)`, which returns its `JoinSession` with the session token. It throws `JoiningError` `join_not_found` when there is no join to resume, and `agent_already_joined` when the join is ready, in which case `reconnectAndProvision()` picks it up.
 
 The whole startup decision is local state plus at most one recovery attempt. `store`, `admin`, `sign`, `install`, and `joinAndInstall` below are the app's own; the client library supplies only the `JoiningClient` calls:
 
