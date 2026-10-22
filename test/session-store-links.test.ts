@@ -31,7 +31,7 @@ function linkChallenge(overrides: Partial<ChallengeState> = {}, link: Partial<Ch
     completed: false,
     attempts: 0,
     expires_at: LINK_EXPIRES,
-    link: { state: 'link_sent', subject_id: 'subject', token_hashes: ['hash_1'], resend_at: NOW + 60_000, ...link },
+    link: { state: 'link_sent', subject_id: 'subject', network_name: 'Test App', token_hashes: ['hash_1'], resend_at: NOW + 60_000, ...link },
     ...overrides,
   };
 }

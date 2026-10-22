@@ -4,12 +4,15 @@ import type { AuthMethodPlugin } from './auth-methods/plugin.js';
 import type { EmailTransport } from './email/transport.js';
 import type { HcAuthClient } from './hc-auth/index.js';
 import type { AllowedAgentStore } from './agent-registration/store.js';
+import { isLinkSessionStore, type SessionStore } from './session/store.js';
+import { DiditClient, resolveDiditConfig } from './didit/client.js';
 import { OpenAuthMethod } from './auth-methods/open.js';
 import { EmailCodeAuthMethod } from './auth-methods/email-code.js';
 import { InviteCodeAuthMethod } from './auth-methods/invite-code.js';
 import { AgentAllowListAuthMethod } from './auth-methods/agent-allow-list.js';
 import { HcAuthApprovalMethod } from './auth-methods/hc-auth-approval.js';
 import { DelegatedVerificationAuthMethod } from './auth-methods/delegated-verification.js';
+import { DiditWithEmailAuthMethod } from './auth-methods/didit-with-email.js';
 
 /** Flatten AuthMethodEntry[] into unique AuthMethod names for plugin init. */
 export function flattenMethods(entries: AuthMethodEntry[]): AuthMethod[] {
@@ -28,6 +31,7 @@ export interface AuthPluginDeps {
   emailTransport?: EmailTransport | null;
   hcAuthClient?: HcAuthClient;
   allowedAgentStore?: AllowedAgentStore;
+  sessionStore?: SessionStore;
 }
 
 /**
@@ -39,7 +43,7 @@ export function buildAuthPlugins(
   config: ServiceConfig,
   deps: AuthPluginDeps = {},
 ): Map<string, AuthMethodPlugin> {
-  const { emailTransport = null, hcAuthClient, allowedAgentStore } = deps;
+  const { emailTransport = null, hcAuthClient, allowedAgentStore, sessionStore } = deps;
   const plugins = new Map<string, AuthMethodPlugin>();
 
   for (const method of flattenMethods(config.auth_methods)) {
@@ -101,6 +105,25 @@ export function buildAuthPlugins(
         plugins.set(
           'delegated_verification',
           new DelegatedVerificationAuthMethod(),
+        );
+        break;
+
+      case 'didit_with_email':
+        if (!emailTransport) {
+          throw new Error('didit_with_email auth requires email config with a transport');
+        }
+        if (!sessionStore || !isLinkSessionStore(sessionStore)) {
+          throw new Error('didit_with_email auth requires a session store with link support');
+        }
+        plugins.set(
+          'didit_with_email',
+          new DiditWithEmailAuthMethod({
+            client: new DiditClient(resolveDiditConfig(config.didit)),
+            store: sessionStore,
+            transport: emailTransport,
+            baseUrl: config.base_url!,
+            happName: config.happ.name,
+          }),
         );
         break;
 

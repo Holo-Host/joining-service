@@ -1,8 +1,15 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { ServiceConfig, RoleConfig } from './config.js';
-import type { AuthMethodPlugin, JoinContext } from './auth-methods/plugin.js';
+import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './auth-methods/plugin.js';
 import type { SessionStore, SessionData, ChallengeState } from './session/store.js';
+import { holdsLink } from './session/store.js';
+import {
+  DiditWithEmailAuthMethod,
+  pollIntervalMs,
+  takeLink,
+} from './auth-methods/didit-with-email.js';
+import { createDiditRoutes } from './routes/didit-links.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
 import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
@@ -166,13 +173,14 @@ async function createReadySession(
   agentKey: string,
   claims: Record<string, string>,
   challenges: ChallengeState[],
-  options?: { skipHcAuth?: boolean },
+  options?: { skipHcAuth?: boolean; beforeCreate?: () => Promise<void> },
   network?: string,
 ): Promise<void> {
   if (!options?.skipHcAuth) {
     await notifyHcAuth(ctx, agentKey, claims);
   }
   await notifyLinkers(ctx, agentKey);
+  await options?.beforeCreate?.();
 
   await ctx.sessionStore.create({
     id: sessionId,
@@ -212,6 +220,11 @@ function allSatisfied(challenges: ChallengeState[]): boolean {
 /** True if any challenge in the session used hc_auth_approval. */
 function usedHcAuthApproval(challenges: ChallengeState[]): boolean {
   return challenges.some((cs) => cs.challenge.type === 'hc_auth_approval');
+}
+
+function diditMethod(ctx: ServiceContext): DiditWithEmailAuthMethod | undefined {
+  const plugin = ctx.authPlugins.get('didit_with_email');
+  return plugin instanceof DiditWithEmailAuthMethod ? plugin : undefined;
 }
 
 /**
@@ -434,7 +447,7 @@ function pendingView(session: SessionData) {
       ...stripInternal(cs.challenge),
       completed: cs.completed,
     })),
-    poll_interval_ms: 2000,
+    poll_interval_ms: pollIntervalMs(session.challenges),
   };
 }
 
@@ -451,17 +464,29 @@ async function completePendingJoin(ctx: ServiceContext, session: SessionData): P
   await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
 }
 
+async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): Promise<void> {
+  if (session.status !== 'pending' || !allSatisfied(session.challenges)) return;
+  await completePendingJoin(ctx, session);
+  session.status = 'ready';
+}
+
 const ALREADY_JOINED =
   'This agent key has already completed joining this network. Use POST /v1/reconnect instead.';
 
 export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
+  const didit = diditMethod(ctx);
 
   // Without this, any throw escaping a handler becomes Hono's default bare
   // `Internal Server Error` text body -- no code for a client to branch on,
   // and no way to tell a rejected credential from a downstream failure that
   // happened *after* the caller was successfully verified.
   app.onError((err, c) => {
+    if (err instanceof JoinRequestError) {
+      const res = errorJson(err.code, err.message, err.status);
+      if (err.retryAfterSeconds !== undefined) res.headers.set('Retry-After', String(err.retryAfterSeconds));
+      return res;
+    }
     if (err instanceof ServiceUnavailableError) {
       console.error(`[service_unavailable] ${err.message}:`, err.reason);
       return errorJson('service_unavailable', err.message, 503);
@@ -552,9 +577,16 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('invalid_agent_key', validation.reason!, 400);
     }
 
-    if (body.timestamp !== undefined || body.signature !== undefined) {
+    const signed = body.timestamp !== undefined || body.signature !== undefined;
+    if (signed) {
       const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature);
       if (refused) return refused;
+    } else if (didit && claims?.email && !body.delegated_verification) {
+      return errorJson(
+        'signature_required',
+        'A join with an email must be signed: send timestamp and signature',
+        400,
+      );
     }
 
     // Resolve the named network, if any, before touching any existing
@@ -607,8 +639,22 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('agent_already_joined', ALREADY_JOINED, 409);
     }
 
+    // An unsigned join never replaces a pending link session, and a join
+    // refused before it writes its own session leaves it working.
+    const replacesLink = existing?.status === 'pending' && holdsLink(existing);
+    if (replacesLink && !signed) {
+      return errorJson(
+        'join_in_progress',
+        'Use POST /v1/join/resume, or sign the join to start again',
+        409,
+      );
+    }
+    const dropReplacedLink = async () => {
+      if (replacesLink) await ctx.sessionStore.delete(existing.id);
+    };
+
     // Delete any stale pending session for this agent
-    if (existing) {
+    if (existing && !replacesLink) {
       await ctx.sessionStore.delete(existing.id);
     }
 
@@ -668,7 +714,7 @@ export function createApp(ctx: ServiceContext): Hono {
       });
 
       const sessionId = generateSessionId();
-      await createReadySession(ctx, sessionId, agent_key, claims, [], undefined, requestedNetwork);
+      await createReadySession(ctx, sessionId, agent_key, claims, [], { beforeCreate: dropReplacedLink }, requestedNetwork);
 
       return c.json({ session: sessionId, status: 'ready' }, 201);
     }
@@ -692,6 +738,7 @@ export function createApp(ctx: ServiceContext): Hono {
         // OR group: create challenges for each method, tag with shared group id
         const groupId = `g_${groupIndex++}`;
         let groupHasChallenges = false;
+        let refusal: JoinRequestError | undefined;
 
         for (const method of entry.any_of) {
           const plugin = ctx.authPlugins.get(method);
@@ -715,10 +762,12 @@ export function createApp(ctx: ServiceContext): Hono {
                   ? new Date(ch.expires_at).getTime()
                   : Date.now() + 600_000,
                 group: groupId,
+                ...takeLink(ch),
               });
               groupHasChallenges = true;
             }
-          } catch {
+          } catch (e: unknown) {
+            if (e instanceof JoinRequestError) refusal ??= e;
             // In an OR group, individual methods may fail (e.g. missing claims).
             // That's fine as long as at least one method in the group succeeds.
           }
@@ -726,6 +775,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
         // If no method in the OR group produced challenges, the group is unsatisfiable
         if (!groupHasChallenges) {
+          if (refusal) throw refusal;
           return errorJson('join_rejected', 'No eligible auth method in group', 403);
         }
       } else {
@@ -753,9 +803,11 @@ export function createApp(ctx: ServiceContext): Hono {
               expires_at: ch.expires_at
                 ? new Date(ch.expires_at).getTime()
                 : Date.now() + 600_000,
+              ...takeLink(ch),
             });
           }
         } catch (e: unknown) {
+          if (e instanceof JoinRequestError) throw e;
           const message = e instanceof Error ? e.message : 'Unknown error';
           return errorJson('missing_claims', message, 400);
         }
@@ -793,10 +845,11 @@ export function createApp(ctx: ServiceContext): Hono {
         agent_key,
         claims,
         allChallenges,
-        { skipHcAuth: usedHcAuthApproval(allChallenges) },
+        { skipHcAuth: usedHcAuthApproval(allChallenges), beforeCreate: dropReplacedLink },
         requestedNetwork,
       );
     } else {
+      await dropReplacedLink();
       await ctx.sessionStore.create({
         id: sessionId,
         agent_key,
@@ -817,7 +870,7 @@ export function createApp(ctx: ServiceContext): Hono {
       response.challenges = allChallenges
         .filter((cs) => !cs.completed)
         .map((cs) => stripInternal(cs.challenge));
-      response.poll_interval_ms = 2000;
+      response.poll_interval_ms = pollIntervalMs(allChallenges);
     }
 
     return c.json(response, 201);
@@ -923,7 +976,7 @@ export function createApp(ctx: ServiceContext): Hono {
       resp.challenges_remaining = session.challenges
         .filter((cs) => !cs.completed)
         .map((cs) => stripInternal(cs.challenge));
-      resp.poll_interval_ms = 2000;
+      resp.poll_interval_ms = pollIntervalMs(session.challenges);
     }
 
     return c.json(resp);
@@ -980,6 +1033,11 @@ export function createApp(ctx: ServiceContext): Hono {
         });
         session.status = newStatus;
       }
+    }
+
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
+      await completeIfSatisfied(ctx, session);
     }
 
     const resp: Record<string, unknown> = { status: session.status };
@@ -1107,6 +1165,23 @@ export function createApp(ctx: ServiceContext): Hono {
     );
   }
 
+  // ---- Emailed link pages and resend for didit_with_email ----
+  if (didit) {
+    app.route(
+      '',
+      createDiditRoutes(didit, ctx.sessionStore, {
+        finishJoin: async (session) => {
+          try {
+            await completeIfSatisfied(ctx, session);
+          } catch (err) {
+            console.error('[didit_with_email] ready path failed; the next call retries:', err);
+          }
+        },
+        pendingView,
+      }),
+    );
+  }
+
   // ---- POST /v1/join/resume ----
   app.post('/v1/join/resume', async (c) => {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -1127,10 +1202,10 @@ export function createApp(ctx: ServiceContext): Hono {
       );
     }
 
-    if (session.status === 'pending' && allSatisfied(session.challenges)) {
-      await completePendingJoin(ctx, session);
-      session.status = 'ready';
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
     }
+    await completeIfSatisfied(ctx, session);
 
     if (session.status === 'ready') {
       return errorJson('agent_already_joined', ALREADY_JOINED, 409);

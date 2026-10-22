@@ -174,6 +174,21 @@ Delegates join decisions to the hc-auth server. The agent is registered as pendi
 
 **Flow**: `POST /v1/join` registers agent as pending in hc-auth → `status: "pending"` with `hc_auth_approval` challenge → client polls `GET /status` → operator approves via hc-auth console → next poll returns `status: "ready"`. If blocked, returns `status: "rejected"`.
 
+### Profile 4d: Identity Verification by Email Link
+
+The service emails a link instead of a code. The person opens it on any device and verifies their identity with Didit. The join becomes ready when Didit approves.
+
+| Setting | Value |
+|---------|-------|
+| `auth_methods` | `['didit_with_email']` or `[{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }]` |
+| `email` | configured |
+| `base_url` | `https` base URL of the emailed links |
+| `didit` | API key, subject key, workflow and environment |
+
+**Use cases**: Networks that need a verified identity per agent key, without an operator in the loop.
+
+**Flow**: signed `POST /v1/join` with `claims.email` → `status: "pending"` with a `didit_with_email` challenge, and an emailed link → the person opens the link and presses Continue → the service sends the browser to a Didit session → client polls `GET /status`, which reads Didit's decision → an approval for this agent key returns `status: "ready"`, and, with `hc_auth` configured, the agent key is registered with hc-auth as `email_code` registers it, with the email in the metadata when `forward_claims` names it.
+
 ---
 
 ### Profile 5: Full Stack (Maximum Security)
@@ -425,6 +440,7 @@ graph TB
         InviteCode["invite_code<br/>Single-use pre-issued codes"]
         AgentWL["agent_allow_list<br/>Pre-approved agent keys<br/>sign nonce to prove identity"]
         HcApproval["hc_auth_approval<br/>Operator/KYC approval via<br/>hc-auth server polling"]
+        Didit["didit_with_email<br/>Emailed link, then Didit<br/>identity verification"]
     end
 
     subgraph "Planned"
@@ -441,6 +457,7 @@ graph TB
     InviteCode -.->|implements| Interface
     AgentWL -.->|implements| Interface
     HcApproval -.->|implements| Interface
+    Didit -.->|implements| Interface
     SMS -.->|implements| Interface
     EVM -.->|implements| Interface
     Solana -.->|implements| Interface

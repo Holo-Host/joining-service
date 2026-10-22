@@ -43,6 +43,8 @@ export interface LinkChallengeData {
   state: DiditWithEmailState;
   /** Keyed hash of the address the link went to. */
   subject_id: string;
+  /** The network the email named. */
+  network_name: string;
   /** SHA-256 of every link token emailed for this challenge. */
   token_hashes: string[];
   /** Earliest time a resend can succeed. */

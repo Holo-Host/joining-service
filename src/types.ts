@@ -54,6 +54,7 @@ export type AuthMethod =
   | 'agent_allow_list'
   | 'hc_auth_approval'
   | 'delegated_verification'
+  | 'didit_with_email'
   | `x-${string}`;
 
 export interface AuthMethodGroup {
@@ -130,7 +131,7 @@ export type DiditWithEmailState =
 /** `metadata` of a `didit_with_email` challenge, exactly. */
 export interface DiditWithEmailMetadata {
   state: DiditWithEmailState;
-  /** When `POST /v1/join/{session}/resend` next accepts this challenge. */
+  /** Earliest time a resend can succeed. The email limits can still refuse it with 429. */
   resend_available_at: string;
 }
 
@@ -151,6 +152,11 @@ export interface StatusResponse {
   challenges?: Challenge[];
   reason?: string;
   poll_interval_ms?: number;
+}
+
+/** `POST /v1/join/{session}/resend`. It answers a pending `StatusResponse`. */
+export interface ResendRequest {
+  challenge_id: string;
 }
 
 export interface NetworkConfig {

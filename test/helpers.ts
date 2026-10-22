@@ -2,13 +2,15 @@ import { createApp, type ServiceContext } from '../src/app.js';
 import { resolveConfig, type ServiceConfig } from '../src/config.js';
 import { MemorySessionStore } from '../src/session/memory-store.js';
 import { SqliteSessionStore } from '../src/session/sqlite-store.js';
-import type { SessionStore } from '../src/session/store.js';
 import { OpenAuthMethod } from '../src/auth-methods/open.js';
 import { EmailCodeAuthMethod } from '../src/auth-methods/email-code.js';
 import { InviteCodeAuthMethod } from '../src/auth-methods/invite-code.js';
 import { AgentAllowListAuthMethod } from '../src/auth-methods/agent-allow-list.js';
 import { HcAuthApprovalMethod } from '../src/auth-methods/hc-auth-approval.js';
 import { DelegatedVerificationAuthMethod } from '../src/auth-methods/delegated-verification.js';
+import { DiditWithEmailAuthMethod } from '../src/auth-methods/didit-with-email.js';
+import { DiditClient, resolveDiditConfig } from '../src/didit/client.js';
+import type { LinkSessionStore } from '../src/session/store.js';
 import { FileTransport } from '../src/email/file.js';
 import { randomBytes } from 'node:crypto';
 import { LairProofGenerator } from '../src/membrane-proof/lair-signer.js';
@@ -67,15 +69,18 @@ export function fakeDnaHash(seed = 0): string {
 export async function signingAgent(): Promise<{
   agentKey: string;
   sign: (timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
+  signBytes: (bytes: Uint8Array) => Promise<string>;
 }> {
   const privateKey = ed.utils.randomPrivateKey();
   const agentKey = encodeHashToBase64(agentPubKeyFrom32(await ed.getPublicKeyAsync(privateKey)));
+  const signBytes = async (bytes: Uint8Array) => Buffer.from(await ed.signAsync(bytes, privateKey)).toString('base64');
   return {
     agentKey,
-    sign: async (timestamp = new Date().toISOString()) => {
-      const signature = await ed.signAsync(new TextEncoder().encode(timestamp), privateKey);
-      return { timestamp, signature: Buffer.from(signature).toString('base64') };
-    },
+    sign: async (timestamp = new Date().toISOString()) => ({
+      timestamp,
+      signature: await signBytes(new TextEncoder().encode(timestamp)),
+    }),
+    signBytes,
   };
 }
 
@@ -121,7 +126,7 @@ export async function createTestApp(
 
   const config = resolveConfig(merged);
 
-  let sessionStore: SessionStore;
+  let sessionStore: LinkSessionStore;
   if (config.session!.store === 'sqlite') {
     sessionStore = new SqliteSessionStore(
       config.session!.db_path ?? ':memory:',
@@ -201,6 +206,18 @@ export async function createTestApp(
           authPlugins.set(
             'delegated_verification',
             new DelegatedVerificationAuthMethod(),
+          );
+          break;
+        case 'didit_with_email':
+          authPlugins.set(
+            'didit_with_email',
+            new DiditWithEmailAuthMethod({
+              client: new DiditClient(resolveDiditConfig(config.didit)),
+              store: sessionStore,
+              transport: new FileTransport(config.email?.output_dir ?? '/tmp/test-emails'),
+              baseUrl: config.base_url!,
+              happName: config.happ.name,
+            }),
           );
           break;
       }

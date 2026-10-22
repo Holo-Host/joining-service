@@ -9,14 +9,8 @@ import {
   type DiditConfig,
 } from '../../src/didit/client.js';
 
-const SUBJECT_KEY = 'ab'.repeat(32);
-const WORKFLOW_ID = '11111111-2222-4333-8444-555555555555';
-const CONFIG: DiditConfig = {
-  api_key: 'didit-test-key',
-  subject_key: SUBJECT_KEY,
-  workflow_id: WORKFLOW_ID,
-  environment: 'sandbox',
-};
+import { DIDIT_CONFIG as CONFIG, SUBJECT_KEY, WORKFLOW_ID } from './fixtures.js';
+
 const SECRET_URL = 'https://verify.didit.me/session/SECRET-SESSION-URL';
 const SECRET_TOKEN = 'SECRET-SESSION-TOKEN';
 
