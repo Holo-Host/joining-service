@@ -84,8 +84,8 @@ export interface LinkSessionStore extends SessionStore {
    * an event at `at` under every key unless `wait` returns a positive delay.
    * Returns that delay, or 0 once recorded. Events must be visible to every
    * service instance. KV can take 60 seconds or more to list a new key, so on
-   * KV reservations that close together can miss each other and each pass,
-   * and ones made at the same moment can each refuse.
+   * KV, reservations close together can miss each other and each pass, and
+   * ones made at the same moment can each be refused.
    */
   reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number>;
   /** Gives back one event that this store recorded at `at`, from every key. */
