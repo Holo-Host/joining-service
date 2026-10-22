@@ -824,7 +824,7 @@ describe('the ready path of a didit_with_email join', () => {
   });
 
   it.each(['the admin approves first', 'Didit approves first'])(
-    'completes beside hc_auth_approval when %s, and leaves authorizing the key to hc-auth',
+    'completes beside hc_auth_approval when %s, leaves authorizing the key to hc-auth, and writes the proven email to verified',
     async (order) => {
       vi.useFakeTimers({ toFake: ['Date'] });
       const client = new HcAuthClient(HC);
@@ -832,6 +832,7 @@ describe('the ready path of a didit_with_email join', () => {
       vi.spyOn(client, 'getRecord').mockResolvedValueOnce(null).mockImplementation(async () => ({ state, pubKey: 'k' }));
       vi.spyOn(client, 'requestAuth').mockResolvedValue();
       const register = vi.spyOn(client, 'registerAndAuthorize').mockResolvedValue();
+      const verified = vi.spyOn(client, 'setVerified').mockResolvedValue();
       const { request, didit, session, token } = await joinedApp(
         { auth_methods: ['hc_auth_approval', 'didit_with_email'], hc_auth: HC },
         client,
@@ -851,6 +852,7 @@ describe('the ready path of a didit_with_email join', () => {
       second();
       expect((await status(request, session)).status).toBe('ready');
       expect(register).not.toHaveBeenCalled();
+      expect(verified).toHaveBeenCalledWith(expect.any(String), { email: EMAIL });
     },
   );
 

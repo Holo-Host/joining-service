@@ -148,7 +148,7 @@ describe('POST /v1/join/resume', () => {
     const res = await resume(request, agent);
     expect(res.status).toBe(409);
     expect((await ctx.sessionStore.get('js_stored'))!.status).toBe('ready');
-    expect(register).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ email: 'a@b.com' }));
+    expect(register).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ email: 'a@b.com' }), { email: 'a@b.com' });
   });
 });
 
