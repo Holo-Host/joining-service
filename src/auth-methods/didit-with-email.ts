@@ -233,13 +233,12 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     return { passed: false, reason: 'Open the link in the email to continue' };
   }
 
-  /** The pending join an emailed link token belongs to. */
   async findLink(token: string): Promise<FoundLink | undefined> {
     const found = await this.findByHash(token, (link, hash) => link.token_hashes.includes(hash));
     return found?.session.status === 'pending' ? found : undefined;
   }
 
-  /** The join a done page credential belongs to, in any status. */
+  /** In any status, so the done page still shows a finished join. */
   findDone(credential: string): Promise<FoundLink | undefined> {
     return this.findByHash(credential, (link, hash) => link.done_hash === hash);
   }
@@ -273,10 +272,6 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     if (read) await this.save(session);
   }
 
-  /**
-   * The Continue button: completes from a decision, opens a Didit session for
-   * the browser, or rejects the join when the email has no attempts left.
-   */
   async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     if (cs.completed) return { kind: 'approved' };
     const key = `didit_continue:${session.id}:${cs.challenge.id}`;
@@ -518,8 +513,9 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   /**
-   * Records an event at `now` under `key` unless `count` happened within
-   * `windowMs`, or one within `spacingMs`, and answers whether it was recorded.
+   * Records an event at `now` under `key` unless `count` events fall within the
+   * last `windowMs`, or one within the last `spacingMs`, and answers whether it
+   * recorded one.
    */
   private async allow(key: string, now: number, count: number, windowMs: number, spacingMs = 0): Promise<boolean> {
     const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {

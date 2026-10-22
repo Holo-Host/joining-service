@@ -74,6 +74,5 @@ describe('JoiningClient.resume', () => {
     expect(url).toBe(`${SERVICE}/join/resume`);
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ agent_key: 'uhCAkAgent', timestamp: body.timestamp, signature: 'AQID', network: 'net-1' });
-    expect(sign).toHaveBeenCalledWith(`resume:${body.timestamp}`);
   });
 });

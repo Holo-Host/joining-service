@@ -20,13 +20,13 @@ describe('signed POST /v1/join', () => {
     const agent = await signingAgent();
     const other = await signingAgent();
     const join = (signed: object) => postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: 'a@b.com' }, ...signed });
-    const first = await join(await agent.sign(joinMessage('a@b.com')));
+    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+    const first = await join(await agent.sign(joinMessage('a@b.com'), at(25_000)));
     expect(first.status).toBe(201);
     const { session } = await first.json();
     const before = await ctx.sessionStore.get(session);
     const lookups = vi.spyOn(ctx.sessionStore, 'findByAgentKey');
 
-    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
     for (const [signed, code] of [
       [await other.sign(joinMessage('a@b.com')), 'invalid_signature'],
       [await agent.sign(), 'invalid_signature'],

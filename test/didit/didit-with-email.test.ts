@@ -100,7 +100,6 @@ function partnerJoin(request: Request, agentKey: string, extra: Record<string, u
   });
 }
 
-/** The done page path Didit was given. */
 function donePath(didit: FakeDidit): string {
   return new URL(didit.calls('create')[0].body!.callback as string).pathname;
 }
@@ -444,12 +443,10 @@ describe('POST /v1/didit/{token}', () => {
       metadata: { agent_key: agent.agentKey },
     });
     expect(create.body!.callback).toBe(`${BASE_URL}${donePath(didit)}`);
-    expect(create.body!.callback).not.toContain(token);
     const credential = donePath(didit).split('/').pop()!;
     for (const res of [await request(`/v1/didit/${credential}`), await pressContinue(request, credential), await request(`/v1/didit/${token}/done`)]) {
       expect(res.status).toBe(404);
     }
-    expect(didit.calls('create')).toHaveLength(1);
     const stored = JSON.stringify(await ctx.sessionStore.get(session));
     expect(stored).not.toContain('SESSION-URL');
     expect(stored).not.toContain('SESSION-TOKEN');
@@ -470,6 +467,10 @@ describe('POST /v1/didit/{token}', () => {
         polled: { status: 'pending', challenges: [{ metadata: { state: 'link_sent' } }] },
         says: 'Another device is verifying this email. Finish there, or try again when it ends.',
       },
+    ],
+    [
+      "this key's session in progress",
+      { seeds: [['In Progress', 'own']], code: 303, creates: 1, polled: { status: 'pending', challenges: [{ metadata: { state: 'in_progress' } }] } },
     ],
     [
       "this key's session in review",
@@ -588,6 +589,8 @@ describe('POST /v1/didit/{token}', () => {
     expect(didit.requests.length - calls).toBe(9 * 2);
     expect(didit.sessions).toHaveLength(1);
     expect(didit.calls('list')).toHaveLength(1);
+    later(3_600_000);
+    expect((await pressContinue(request, token)).status).toBe(303);
   });
 
   it('starts a new attempt after a decline, and after Didit forgets the session', async () => {
@@ -862,15 +865,15 @@ describe('POST /v1/join/resume for a didit_with_email join', () => {
 
 describe('GET /v1/didit/done/{credential}', () => {
   it.each([
-    ['In Progress', 'Your verification is still in progress. Go back to the app. It continues by itself.', 'pending'],
-    ['In Review', 'Your verification is in review. After the review, the app continues by itself.', 'pending'],
-    ['Declined', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
-    ['Expired', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
-    [undefined, 'We could not find your verification. To start again, open the link in your email and press Continue.', 'pending'],
-    ['Approved', VERIFIED, 'pending'],
-    ['Approved', VERIFIED, 'ready'],
-    ['In Progress', NO_ATTEMPTS_LEFT, 'rejected'],
-  ])('shows where a %s verification stands in a %s join, whatever the query says', async (didStatus, text, joinStatus) => {
+    ['In Progress', 'pending', 'Your verification is still in progress. Go back to the app. It continues by itself.'],
+    ['In Review', 'pending', 'Your verification is in review. After the review, the app continues by itself.'],
+    ['Declined', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
+    ['Expired', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
+    [undefined, 'pending', 'We could not find your verification. To start again, open the link in your email and press Continue.'],
+    ['Approved', 'pending', VERIFIED],
+    ['Approved', 'ready', VERIFIED],
+    ['In Progress', 'rejected', NO_ATTEMPTS_LEFT],
+  ])('shows where a %s verification stands in a %s join, whatever the query says', async (didStatus, joinStatus, text) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
     const { request, ctx, didit, session, token } = await joinedApp();

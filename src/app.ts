@@ -404,7 +404,6 @@ function timestampError(
   return null;
 }
 
-/** Whether `signature` is the agent key's ed25519 signature over the UTF-8 bytes of `message`. */
 async function signedByAgent(
   agentKey: string,
   message: string,

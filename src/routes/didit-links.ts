@@ -74,6 +74,7 @@ export function createDiditRoutes(
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
     if (session.status === 'rejected') return messagePage(session.reason ?? TEXT.rejected, 403);
+    // Didit holds this credential, so the page's only write is a gated decision read. The app's next status call finishes the join.
     if (session.status === 'pending') await method.refresh(session);
     return donePage(cs.link!.state);
   }));

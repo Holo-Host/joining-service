@@ -65,10 +65,10 @@ export function fakeDnaHash(seed = 0): string {
   return encodeHashToBase64(bytes);
 }
 
-/** A real ed25519 agent key, and a fresh `{timestamp, signature}` pair it signed. */
 export const joinMessage = (email = '') => (timestamp: string) => `join:${timestamp}:${email}`;
 export const resumeMessage = (timestamp: string) => `resume:${timestamp}`;
 
+/** A real ed25519 agent key, and a signer that returns a fresh timestamp with its signature over `message(timestamp)`, the bare timestamp by default. */
 export async function signingAgent(): Promise<{
   agentKey: string;
   sign: (message?: (timestamp: string) => string, timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
