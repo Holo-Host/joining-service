@@ -33,10 +33,14 @@ jobs:
         run: |
           npx wrangler deploy --dry-run \
             --config deploy/cloudflare/wrangler.toml \
-            --outfile dist/worker.js
+            --outdir "$PWD/dist/worker"
+          cp dist/worker/worker-entry.js dist/worker.js
+          cd dist && sha256sum worker.js > worker.js.sha256
       - name: Upload release artefacts
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           files: |
             dist/worker.js
+            dist/worker.js.sha256
             deploy/cloudflare/wrangler.toml
