@@ -2,23 +2,47 @@ import { vi } from 'vitest';
 import type { KVNamespace } from '../../src/urls/kv.js';
 import type { LinkerInvite, RegisteredLinker } from '../../src/linker-registration/types.js';
 
-export function createMockKV(): KVNamespace & { store: Map<string, { value: string; expirationTtl?: number }> } {
-  const store = new Map<string, { value: string; expirationTtl?: number }>();
+interface MockKvEntry {
+  value: string;
+  expirationTtl?: number;
+  expiration?: number;
+  writtenAt?: number;
+}
+
+/**
+ * A KV namespace in memory. With `latencyMs`, each call first waits a random
+ * time up to that long, so concurrent calls interleave. A list returns
+ * `pageSize` keys a page, and hides keys written in the last `listLagMs`.
+ */
+export function createMockKV({ latencyMs = 0, pageSize = 1000, listLagMs = 0 } = {}): KVNamespace & {
+  store: Map<string, MockKvEntry>;
+} {
+  const store = new Map<string, MockKvEntry>();
+  const lag = () => (latencyMs ? new Promise((resolve) => setTimeout(resolve, Math.random() * latencyMs)) : undefined);
   return {
     store,
-    get: vi.fn(async (key: string) => store.get(key)?.value ?? null),
-    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => {
-      store.set(key, { value, expirationTtl: opts?.expirationTtl });
+    get: vi.fn(async (key: string) => {
+      await lag();
+      return store.get(key)?.value ?? null;
+    }),
+    put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number; expiration?: number }) => {
+      await lag();
+      store.set(key, { value, expirationTtl: opts?.expirationTtl, expiration: opts?.expiration, writtenAt: Date.now() });
     }),
     delete: vi.fn(async (key: string) => {
+      await lag();
       store.delete(key);
     }),
-    list: vi.fn(async (options: { prefix: string }) => {
-      const keys: Array<{ name: string }> = [];
-      for (const name of store.keys()) {
-        if (name.startsWith(options.prefix)) keys.push({ name });
-      }
-      return { keys };
+    list: vi.fn(async (options: { prefix: string; cursor?: string }) => {
+      await lag();
+      const listed = [...store.entries()]
+        .filter(([name, entry]) => name.startsWith(options.prefix) && Date.now() - (entry.writtenAt ?? 0) >= listLagMs)
+        .map(([name]) => ({ name }))
+        .sort((a, b) => (a.name < b.name ? -1 : 1));
+      const start = Number(options.cursor ?? 0);
+      const end = start + pageSize;
+      const keys = listed.slice(start, end);
+      return end < listed.length ? { keys, list_complete: false, cursor: String(end) } : { keys, list_complete: true };
     }),
   };
 }

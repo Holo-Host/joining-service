@@ -350,7 +350,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `roles` | Record\<role_name, {dna_hash?, modifiers?}\> | — | Role-centric configuration: `{role_name: {dna_hash?: "...", modifiers?: {...}}}`. `dna_hash` is required per-role only when `membrane_proof.enabled` is true (it binds the membrane proof to a network); when present it is always validated. See [Obtaining the DNA hash](#obtaining-the-dna-hash). |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
-| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` auth |
+| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` and `didit_with_email` auth |
 | `email.api_key` | string | — | Postmark or SendGrid API token |
 | `email.from` | string | — | Sender address |
 | `email.template` | string | — | Custom email template |
@@ -362,7 +362,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `session.pending_ttl_seconds` | number | 86400 | TTL for pending (unapproved) sessions. Ready sessions never expire — for memory/SQLite stores this means unbounded growth over time. At high scale, consider periodic pruning of old ready sessions or switching to Cloudflare KV with its built-in expiration. |
 | `reconnect.enabled` | boolean | true | Allow `POST /v1/reconnect` |
 | `reconnect.timestamp_tolerance_seconds` | number | 300 | Max clock drift (seconds) for reconnect signature |
-| `base_url` | string | auto-detected | Override for `/.well-known/holo-joining` response |
+| `base_url` | string | auto-detected | Override for `/.well-known/holo-joining` response. Required with `didit_with_email`, and `https`: its emailed links start with it. |
 | `port` | number | 3000 | |
 | `network.bootstrap_url` | string | — | Bootstrap server URL (returned in provision response `network_config`) |
 | `network.relay_url` | string | — | Relay server URL (returned in provision response `network_config`) |
@@ -374,6 +374,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `network_registration.admin_secret` | string | — | Bearer token for the network admin routes. If absent, admin routes return 404. When present, enables `POST/GET/DELETE /v1/admin/networks` for runtime registration of networks. |
 | `linker_auth` | LinkerAuthConfig | — | Linker authentication configuration |
 | `delegated_verification` | DelegatedVerificationConfig | — | Configuration for delegated verification auth method |
+| `didit` | DiditConfig | — | Required for `didit_with_email` auth. `didit.api_key` and `didit.subject_key` are secrets. Fields and defaults: [JOINING_SERVICE_API.md, Didit With Email](JOINING_SERVICE_API.md#didit-with-email). |
 
 ### Registering allowed agents at runtime
 

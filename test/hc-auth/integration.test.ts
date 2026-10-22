@@ -81,6 +81,27 @@ describe('hc-auth integration — open auth (immediate ready)', () => {
     expect((await res.json()).error.code).toBe('service_unavailable');
   });
 
+  it('keeps the invite code of a join that fails at a required hc-auth step', async () => {
+    const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true };
+    const client = new HcAuthClient(HC);
+    vi.spyOn(client, 'registerAndAuthorize').mockRejectedValueOnce(new Error('hc-auth down')).mockResolvedValue();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request } = await createTestApp(
+      { auth_methods: ['invite_code'], invite_codes: ['GOOD'], hc_auth: HC },
+      undefined,
+      undefined,
+      client,
+    );
+    const join = () => request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: fakeAgentKey(44), claims: { invite_code: 'GOOD' } }),
+    });
+
+    expect((await join()).status).toBe(503);
+    expect((await join()).status).toBe(201);
+  });
+
   it('returns a structured JSON error, not plain text, for an unexpected throw', async () => {
     const client = new HcAuthClient({
       url: 'https://auth.example.com',
@@ -169,6 +190,39 @@ describe('hc-auth integration — email_code auth (ready on verify)', () => {
     expect((await verifyRes.json()).status).toBe('ready');
 
     expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the session pending when a required hc-auth step fails on the final verify, which the same verify or a status poll retries', async () => {
+    const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true };
+    const client = new HcAuthClient(HC);
+    const spy = vi.spyOn(client, 'registerAndAuthorize').mockRejectedValue(new Error('hc-auth down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request, ctx } = await createTestApp(
+      { auth_methods: ['email_code'], email: { provider: 'file', output_dir: '/tmp/test-emails' }, hc_auth: HC },
+      undefined,
+      undefined,
+      client,
+    );
+    const joinRes = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: fakeAgentKey(43), claims: { email: 'a@b.com' } }),
+    });
+    const { session, challenges } = await joinRes.json();
+    const expectedCode = (await ctx.sessionStore.get(session))!.challenges[0].expected_response;
+
+    const verify = () => request(`/v1/join/${session}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_id: challenges[0].id, response: expectedCode }),
+    });
+    expect((await verify()).status).toBe(503);
+    expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
+    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
+
+    spy.mockResolvedValue();
+    expect(await (await verify()).json()).toEqual({ status: 'ready' });
+    expect(spy).toHaveBeenCalledTimes(3);
   });
 
   it('passes forwarded claims as verified, not only inside metadata', async () => {

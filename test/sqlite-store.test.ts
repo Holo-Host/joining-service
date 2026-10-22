@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { SqliteSessionStore } from '../src/session/sqlite-store.js';
 import type { SessionData } from '../src/session/store.js';
 
@@ -270,9 +271,14 @@ describe('SqliteSessionStore', () => {
     store2.close();
   });
 
-  it('cleanup removes expired pending sessions but keeps ready sessions', async () => {
+  it('cleanup removes expired pending sessions but keeps ready sessions, in a database made without link_expires_at', async () => {
+    const dbPath = join(tmpDir, 'cleanup.db');
+    const earlier = new Database(dbPath);
+    earlier.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_key TEXT NOT NULL, status TEXT NOT NULL,
+      challenges TEXT NOT NULL, claims TEXT NOT NULL, created_at INTEGER NOT NULL, reason TEXT, network TEXT)`);
+    earlier.close();
     const shortStore = new SqliteSessionStore(
-      join(tmpDir, 'cleanup.db'),
+      dbPath,
       1, // 1 second pending TTL
     );
 

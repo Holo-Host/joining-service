@@ -2,13 +2,15 @@ import { createApp, type ServiceContext } from '../src/app.js';
 import { resolveConfig, type ServiceConfig } from '../src/config.js';
 import { MemorySessionStore } from '../src/session/memory-store.js';
 import { SqliteSessionStore } from '../src/session/sqlite-store.js';
-import type { SessionStore } from '../src/session/store.js';
 import { OpenAuthMethod } from '../src/auth-methods/open.js';
 import { EmailCodeAuthMethod } from '../src/auth-methods/email-code.js';
 import { InviteCodeAuthMethod } from '../src/auth-methods/invite-code.js';
 import { AgentAllowListAuthMethod } from '../src/auth-methods/agent-allow-list.js';
 import { HcAuthApprovalMethod } from '../src/auth-methods/hc-auth-approval.js';
 import { DelegatedVerificationAuthMethod } from '../src/auth-methods/delegated-verification.js';
+import { DiditWithEmailAuthMethod } from '../src/auth-methods/didit-with-email.js';
+import { DiditClient, resolveDiditConfig } from '../src/didit/client.js';
+import type { LinkSessionStore } from '../src/session/store.js';
 import { FileTransport } from '../src/email/file.js';
 import { randomBytes } from 'node:crypto';
 import { LairProofGenerator } from '../src/membrane-proof/lair-signer.js';
@@ -18,7 +20,8 @@ import type { AuthMethodPlugin } from '../src/auth-methods/plugin.js';
 import type { HcAuthClient } from '../src/hc-auth/index.js';
 import type { AuthMethod, AuthMethodEntry } from '../src/types.js';
 import type { Hono } from 'hono';
-import { encodeHashToBase64, dhtLocationFrom32 } from '../src/utils.js';
+import * as ed from '@noble/ed25519';
+import { encodeHashToBase64, dhtLocationFrom32, agentPubKeyFrom32 } from '../src/utils.js';
 import { MemoryAllowedAgentStore } from '../src/agent-registration/memory-store.js';
 import type { AllowedAgentStore } from '../src/agent-registration/store.js';
 import { MemoryNetworkStore } from '../src/network-registration/memory-store.js';
@@ -62,6 +65,51 @@ export function fakeDnaHash(seed = 0): string {
   return encodeHashToBase64(bytes);
 }
 
+export const joinMessage = (email = '') => (timestamp: string) => `join:${timestamp}:${email}`;
+export const resumeMessage = (timestamp: string) => `resume:${timestamp}`;
+
+/** A real ed25519 agent key, and a signer that returns a fresh timestamp with its signature over `message(timestamp)`, the bare timestamp by default. */
+export async function signingAgent(): Promise<{
+  agentKey: string;
+  sign: (message?: (timestamp: string) => string, timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
+  signBytes: (bytes: Uint8Array) => Promise<string>;
+}> {
+  const privateKey = ed.utils.randomPrivateKey();
+  const agentKey = encodeHashToBase64(agentPubKeyFrom32(await ed.getPublicKeyAsync(privateKey)));
+  const signBytes = async (bytes: Uint8Array) => Buffer.from(await ed.signAsync(bytes, privateKey)).toString('base64');
+  return {
+    agentKey,
+    sign: async (message = (timestamp: string) => timestamp, timestamp = new Date().toISOString()) => ({
+      timestamp,
+      signature: await signBytes(new TextEncoder().encode(message(timestamp))),
+    }),
+    signBytes,
+  };
+}
+
+/** The identity point as an agent key, with a signature that verifies against it for any message. */
+export function smallOrderSigned(): { agent_key: string; timestamp: string; signature: string } {
+  const identity = new Uint8Array(32);
+  identity[0] = 1;
+  return {
+    agent_key: encodeHashToBase64(agentPubKeyFrom32(identity)),
+    timestamp: new Date().toISOString(),
+    signature: Buffer.from([1, ...new Array(63).fill(0)]).toString('base64'),
+  };
+}
+
+export function postJson(
+  request: TestApp['request'],
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  return request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 export interface TestApp {
   app: Hono;
   ctx: ServiceContext;
@@ -92,7 +140,7 @@ export async function createTestApp(
 
   const config = resolveConfig(merged);
 
-  let sessionStore: SessionStore;
+  let sessionStore: LinkSessionStore;
   if (config.session!.store === 'sqlite') {
     sessionStore = new SqliteSessionStore(
       config.session!.db_path ?? ':memory:',
@@ -172,6 +220,18 @@ export async function createTestApp(
           authPlugins.set(
             'delegated_verification',
             new DelegatedVerificationAuthMethod(),
+          );
+          break;
+        case 'didit_with_email':
+          authPlugins.set(
+            'didit_with_email',
+            new DiditWithEmailAuthMethod({
+              client: new DiditClient(resolveDiditConfig(config.didit)),
+              store: sessionStore,
+              transport: new FileTransport(config.email?.output_dir ?? '/tmp/test-emails'),
+              baseUrl: config.base_url!,
+              happName: config.happ.name,
+            }),
           );
           break;
       }

@@ -4,6 +4,8 @@ import type { LinkerAuthConfig } from './linker-auth/index.js';
 import type { DelegatedVerificationConfig } from './auth-methods/delegated-verification.js';
 import { validateDelegatedVerificationConfig } from './auth-methods/delegated-verification.js';
 import { decodeHashFromBase64 } from './utils.js';
+import { resolveDiditConfig, type DiditConfig } from './didit/client.js';
+import { flattenMethods } from './auth-plugins.js';
 
 /** Per-role DNA configuration, mirroring Holochain's app model. */
 export interface RoleConfig {
@@ -70,6 +72,8 @@ export interface ServiceConfig {
   hc_auth?: HcAuthConfig;
   linker_auth?: LinkerAuthConfig;
   delegated_verification?: DelegatedVerificationConfig;
+  /** Didit identity verification for `didit_with_email`. */
+  didit?: DiditConfig;
   /** Runtime registration of allowed agents (e.g. network progenitors). */
   agent_registration?: {
     /** Bearer secret for the /v1/admin/allowed-agents routes. */
@@ -121,6 +125,10 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
     validateDelegatedVerificationConfig(partial.delegated_verification);
   }
 
+  if (flattenMethods(partial.auth_methods).includes('didit_with_email')) {
+    validateDiditWithEmail(partial);
+  }
+
   // An explicitly empty roles map carries no DNA information, so it is
   // treated as absent.
   const hasRoles = !!partial.roles && Object.keys(partial.roles).length > 0;
@@ -149,6 +157,19 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
     port: partial.port ?? DEFAULTS.port,
     roles,
   };
+}
+
+function validateDiditWithEmail(partial: Partial<ServiceConfig>): void {
+  resolveDiditConfig(partial.didit);
+  if (flattenMethods(partial.auth_methods!).includes('email_code')) {
+    throw new Error('config: didit_with_email and email_code both email the same address for one join; use one');
+  }
+  if (!partial.email?.provider) {
+    throw new Error('config: didit_with_email requires an email transport');
+  }
+  if (!partial.base_url || !URL.canParse(partial.base_url) || new URL(partial.base_url).protocol !== 'https:') {
+    throw new Error('config: didit_with_email requires an https base_url, which its links start with');
+  }
 }
 
 export function isValidDnaHash(hash: string): boolean {

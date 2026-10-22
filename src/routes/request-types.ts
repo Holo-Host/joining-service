@@ -79,3 +79,10 @@ export const RegisterNetworkBody = v.object({
   allowed_agents: v.optional(v.array(v.string())),
 });
 export type RegisterNetworkBody = v.InferOutput<typeof RegisterNetworkBody>;
+
+// ---- POST /v1/join/:session/resend ----
+
+export const ResendBody = v.object({
+  challenge_id: v.string(),
+});
+export type ResendBody = v.InferOutput<typeof ResendBody>;

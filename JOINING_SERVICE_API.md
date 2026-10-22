@@ -230,6 +230,8 @@ The client sends its agent key and optional identity claims. The server determin
 | `claims.evm_address` | string | no | EVM wallet address (0x-prefixed, checksummed) |
 | `claims.solana_address` | string | no | Solana wallet address (base58) |
 | `claims.invite_code` | string | no | Pre-issued invite code |
+| `timestamp` | string (ISO 8601) | with `signature` | The time of signing. Required by `didit_with_email`. |
+| `signature` | string | with `timestamp` | Base64 ed25519 signature by `agent_key` of the UTF-8 bytes of `join:{timestamp}:{email}`. `{email}` is `claims.email` exactly as sent, or empty when the join has none. A bad pair is refused before any session is read or changed. |
 | `network` | string | no | `happ_id` of a registered network (see Section 3.11 for registration), or the service's own statically configured happ id (`happ.id` in config). Naming the statically configured happ id is treated exactly as omitting `network` -- both land the session in the same scope and receive the service's static `roles` at provision. If present but not a string, not matching the happ_id format, or not registered with the service (and not the static happ id), the join is rejected with 400 `unknown_network`. If the named network has a non-empty `allowed_agents` and `agent_key` is not in it, the join is rejected with 403 `join_rejected` -- see Section 3.11. |
 
 **Response** (`201 Created`) — verification required:
@@ -293,11 +295,20 @@ The client sends its agent key and optional identity claims. The server determin
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `invalid_signature` | Only one of `timestamp` and `signature` was sent, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
 | 400 | `unknown_network` | `network` value is not a string, does not match the network-id format, or names a network not registered with this service |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
+| 400 | `signature_required` | `didit_with_email` is configured and the join carries `claims.email` without `timestamp` and `signature`. A join that carries `delegated_verification` is exempt. |
 | 403 | `join_rejected` | Join was rejected (agent not on the named network's `allowed_agents`, agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
 | 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
-| 429 | `rate_limited` | Too many join attempts |
+| 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join to replace the session. |
+| 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
+| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth step failed. Nothing was created. |
+
+A join refused after its invite code passed leaves the code unused.
+
+A refused join leaves a pending `didit_with_email` session and its links working.
 
 An agent key can hold at most one live session per network: joining is scoped to the agent-key-plus-network pair (an omitted `network`, and the statically configured network's own happ id, are the same scope -- see Section 3.2). An agent that already joined one network may join a different network -- that second join is a separate session with its own roles at provision time. Re-joining a network the agent already has a live session on gets `409 agent_already_joined`; there is no re-join within the same network. `POST /v1/reconnect` (Section 3.6) refreshes linker/gateway URLs for an agent with any ready session, regardless of which network it named, and separately returns a network-scoped `session` token when the requested network has a ready session -- that token is for the same `GET /v1/join/{session}/provision` (Section 3.5) call the original join would have used, which is how an agent that crashed between receiving its session token and provisioning recovers without a second join.
 
@@ -366,8 +377,9 @@ For EVM signature challenges, `response` is the hex-encoded signature:
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 404 | `challenge_not_found` | Challenge ID not found for this session |
 | 410 | `challenge_expired` | Challenge has expired; client should `POST /join` again |
-| 422 | `verification_failed` | Response was incorrect (e.g., wrong code) |
+| 422 | `verification_failed` | Response was incorrect (e.g., wrong code). A `didit_with_email` challenge answers this, with "Open the link in the email to continue", and the call counts toward the attempt limit. |
 | 429 | `rate_limited` | Too many verification attempts |
+| 503 | `service_unavailable` | The challenge passed, but a required hc-auth step failed. The session stays pending, and a status poll or the same verify again retries. |
 
 ---
 
@@ -400,12 +412,15 @@ The `/status` endpoint returns the current session state, including status and o
 | `reason` | string | if rejected | Human-readable rejection reason (e.g. `"agent blocked by administrator"`) |
 | `poll_interval_ms` | number | if pending | Suggested polling interval in milliseconds |
 
+For an open `didit_with_email` challenge with a Didit session, status first reads Didit's decision, at most once per read interval (Section 8). An approved decision for this join completes the challenge and makes the session ready. While Didit is unreachable, the stored state comes back and the next poll tries again.
+
 **Errors**:
 
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 410 | `session_expired` | Session has expired entirely |
+| 503 | `service_unavailable` | A session whose every requirement is met could not be made ready at a required hc-auth step. The session stays pending, and the next poll retries. |
 
 ---
 
@@ -490,7 +505,7 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (same key used during join) |
-| `timestamp` | string (ISO 8601) | yes | Current UTC timestamp. Server rejects if more than 5 minutes from server time. |
+| `timestamp` | string (ISO 8601) | yes | The time of signing. |
 | `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key`. The signature covers only `timestamp` -- `network` selects among the agent's own already-authenticated sessions and does not need to be signed over. |
 | `network` | string | no | `happ_id` of the network whose session token to look up (same value as sent to `POST /v1/join`). Omitted, or equal to the service's own statically configured happ id, targets the static network -- both spellings are the same scope, as in Section 3.2. If present but not a string, or not matching the happ_id format, the request is rejected with 400 `unknown_network` rather than falling back to the static scope. |
 
@@ -531,8 +546,8 @@ The linker/gateway URL refresh and the session-token lookup are checked separate
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
-| 400 | `invalid_signature` | Signature does not verify against agent key |
-| 400 | `timestamp_out_of_range` | Timestamp is more than 5 minutes from server time |
+| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
 | 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
 | 403 | `agent_not_joined` | This agent key has no ready session at all, or `network` was explicitly given as a network other than the static one and has no ready session there |
 | 403 | `agent_revoked` | Agent was blocked by administrator (hc_auth_approval revocation) |
@@ -864,6 +879,88 @@ The network registration routes (`POST /v1/admin/networks`, `GET /v1/admin/netwo
 
 **`network_config` is service-wide**: `network_config` (bootstrap/relay/auth-server URLs, see Section 3.5) comes from the service's own config, not from a network registration -- it is identical for every session regardless of which `network` was joined. `roles` and `happ_bundle_url` (at both `/v1/info/:happ_id` and `GET /v1/join/{session}/provision`) come from the network's own registration instead, with no fallback to the service's static config.
 
+### 3.16 `POST /v1/join/resume` — Resume a Join
+
+The way back into a join for a client that lost its session token, for example after a restart or a crash before it saved the token. The agent proves key ownership by signing `resume:{timestamp}` as reconnect signs its timestamp (Section 3.6), and the signature is checked before any session is looked up. Resume sends no email and starts nothing.
+
+**Request**:
+```json
+{
+  "agent_key": "uhCAk...",
+  "timestamp": "2026-10-21T14:02:11Z",
+  "signature": "base64-encoded-ed25519-signature-of-resume:2026-10-21T14:02:11Z",
+  "network": "my-network"
+}
+```
+
+`network` selects the session scope as in Section 3.6.
+
+**Response** (`200 OK`) — a join is in progress. `challenges` and `poll_interval_ms` are as `GET /v1/join/{session}/status` returns them, with a `didit_with_email` challenge refreshed from Didit as status refreshes it:
+```json
+{
+  "session": "js_a1b2c3d4e5f6",
+  "status": "pending",
+  "challenges": [
+    { "id": "ch_email_1", "type": "email_code", "description": "Enter the 6-digit code sent to u***@example.com", "completed": false }
+  ],
+  "poll_interval_ms": 2000
+}
+```
+
+**Response** (`200 OK`) — the join was rejected:
+```json
+{ "session": "js_a1b2c3d4e5f6", "status": "rejected", "reason": "Agent blocked by administrator" }
+```
+
+A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`.
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `invalid_json` | The body is not a JSON object |
+| 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
+| 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
+| 404 | `join_not_found` | No session for this agent key in this scope. Start a join with `POST /v1/join`. |
+| 409 | `agent_already_joined` | The session is ready, before or after this call. Use `POST /v1/reconnect`, then provision. |
+| 503 | `service_unavailable` | Making the session ready failed at a required hc-auth step. The session stays pending. |
+
+---
+
+### 3.17 `POST /v1/join/{session}/resend` — Resend the Link Email
+
+Sends a `didit_with_email` challenge's email again, with a new link. Earlier links keep working.
+
+**Request**:
+```json
+{ "challenge_id": "ch_didit_1792591331000" }
+```
+
+**Response** (`200 OK`): `{status: "pending", challenges, poll_interval_ms}`, as status returns them, with the next `metadata.resend_available_at`.
+
+**Errors**:
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 401 | `invalid_session` | Session token is unknown, expired, or not pending |
+| 404 | `challenge_not_found` | No open `didit_with_email` challenge with this id in the session |
+| 429 | `rate_limited` | An email limit (Section 8). `Retry-After` gives the seconds to wait. |
+| 503 | `service_unavailable` | The email could not be sent |
+
+---
+
+### 3.18 `/v1/didit/{token}` — Link Pages
+
+Server-rendered HTML for the person who opens the emailed link, on any device. `{token}` and the done page's `{credential}` are the only credentials. No page runs script, and every page sends `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'`. An unknown, expired or finished token, and an unknown or expired credential, get one `404` page: "This link is no longer valid, or this join is finished. Open the app to continue."
+
+- **`GET /v1/didit/{token}`** shows the network, the time the join started, the joining agent key in short form (`uhCAk3fQ…9xQ2ab`), and, unless Didit has approved it or is reviewing it, a warning for a person who did not start the join and a Continue button. It changes nothing and calls nobody, so a mail scanner that fetches the link starts nothing.
+- **`POST /v1/didit/{token}`** is the Continue button, with no fields. It completes the challenge from this key's approval in Didit, takes up this key's session in review, or answers `303 See Other` to a Didit session it created or reused. It answers `403` when the email has no verification attempts left, which rejects the join, `409` while another agent key's verification of this email is under way, and `503` while Didit is unreachable, changing nothing. One challenge's Continue runs at most once per 10 seconds and 10 times an hour, whether it reaches Didit or retries a join that Didit already approved. A Continue beyond that answers the same `503` page.
+- **`GET /v1/didit/done/{credential}`** is Didit's callback. Its credential opens only this page and does not give back the token. The page ignores its query string and says where the verification stands. For a pending join it reads the decision at most once per read interval and records it, so the app's next status call finishes the join. A ready join shows its stored state without a read, and a rejected join answers `403` with the reason. It works until the link expires.
+
+A page that fails for any other reason answers `503` with the unavailable text above, never a JSON error.
+
 ---
 
 ## 4. Client Integration
@@ -884,7 +981,7 @@ Two pieces of purely local state decide which endpoint to call: whether an agent
 |----------|---------|-----------|
 | `200` with `session` | The agent has a ready session on the requested network | `GET /v1/join/{session}/provision` (Section 3.5), then install |
 | `200` without `session` | `network` was omitted or named the statically configured network, and that scope has no ready session | `POST /v1/join` |
-| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join` |
+| `403 agent_not_joined` | The agent has no ready session at all, or an explicitly named non-static network has none | `POST /v1/join/resume` (Section 3.16), then poll a pending join's status. On `404 join_not_found`, `POST /v1/join` |
 
 The provision call is the same one a fresh join would make, and it is repeatable: on the success path it writes no session state and mints a fresh membrane proof with a new nonce and timestamp per call. A client that crashes again partway through installing can call it again with the same token.
 
@@ -902,7 +999,7 @@ A client must record the agent-key-to-hApp association in local storage **before
 
 This is a requirement rather than advice because only one of the two orders is achievable. Local write, then remote call: whenever the process dies, the key is on disk, and the decision tree in Section 4.1 finds it and recovers. Remote call, then local write: the interval between the server committing the session and the client's write reaching disk belongs to neither party, and nothing the client can do closes it. Persisting the session token instead hits the same wall from a worse position — the token does not exist until the response arrives, so it can only be written after the state it is meant to recover already exists on the server.
 
-What this ordering protects is not identity. A client that joins, crashes, and finds no recorded key on its next run generates a new one; the abandoned key has no chain and no cells, so nothing is forked and nothing is corrupt. What it loses is the join. `409 agent_already_joined` is scoped to the agent-key-plus-network pair (Section 3.2), so the ready session now belongs to a key the client can no longer name, and the new key has to clear authentication from the start. Where that means another invite code, the cost is real: the reference `invite_code` method consumes a code on first successful use, so an agent whose only credential was a single-use code, with no operator to issue a replacement, cannot join at all.
+What this ordering protects is not identity. A client that joins, crashes, and finds no recorded key on its next run generates a new one; the abandoned key has no chain and no cells, so nothing is forked and nothing is corrupt. What it loses is the join. `409 agent_already_joined` is scoped to the agent-key-plus-network pair (Section 3.2), so the ready session now belongs to a key the client can no longer name, and the new key has to clear authentication from the start. For `didit_with_email` that means a new identity verification, since an approval completes only the join of the key it names. Where that means another invite code, the cost is real: the reference `invite_code` method consumes a code on first successful use, so an agent whose only credential was a single-use code, with no operator to issue a replacement, cannot join at all.
 
 ---
 
@@ -936,6 +1033,7 @@ All errors follow a consistent JSON structure:
 - `422` — Unprocessable entity (verification failed)
 - `429` — Too many requests
 - `500` — Internal server error
+- `503` — Service unavailable (a required downstream service failed)
 
 ---
 
@@ -991,17 +1089,24 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 ### Session Scoping
 - Each session is bound to the `agent_key` that created it. Provision data is only issued for that agent.
 - Session tokens: cryptographically random, at least 128 bits of entropy, prefixed `js_`.
-- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire.
+- Expiry: pending sessions live for `session.pending_ttl_seconds` (default 86400, 24 hours); ready sessions do not expire. A pending session that holds a `didit_with_email` challenge lives until that challenge's `expires_at` instead, and no write moves it.
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
-- The server does NOT verify private key ownership — that proof happens at the Holochain network level during genesis and all subsequent signed actions.
+- An unsigned join does not prove private key ownership. That proof happens at the Holochain network level during genesis and all subsequent signed actions. A signed join (Section 3.2), resume (Section 3.16) and reconnect (Section 3.6) do prove it.
+- A signed join, resume and reconnect answer `invalid_signature` for a key in any form but its canonical one, one whose DHT location does not match its core key, or a small-order key, which verifies one fixed signature for any message.
 
 ### Reconnect Replay Window
 
-`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting any timestamp within `reconnect.timestamp_tolerance_seconds` of server time (default 300). Ready sessions do not expire, so a reconnect request observed anywhere — a proxy log, a debug capture, a compromised client — can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
+`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting a timestamp within `reconnect.timestamp_tolerance_seconds` (default 300) of server time and no more than 30 seconds ahead of it. Ready sessions do not expire, so a reconnect request observed anywhere, such as a proxy log, a debug capture or a compromised client, can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
 
-Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to widen the signed payload beyond the bare timestamp — covering at least the agent key and a server-issued nonce — so that a captured signature cannot be replayed at all.
+A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Every signed route takes `timestamp` only as an ISO 8601 date and time with seconds and a zone, such as `2026-10-22T18:15:41.764Z`, and refuses any other form as malformed, so one route's signed message cannot pass as another's timestamp. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope.
+
+Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to sign at least the agent key and a server-issued nonce, so that a captured signature cannot be replayed at all.
+
+### Emailed Link Tokens
+
+A `didit_with_email` link token is 32 random bytes in base64url. Only the email carries it, and the store keeps only its SHA-256 hash. Didit holds only the done page's credential, which can show where the verification stands and nothing more. The link serves only the join of the key that signed it, and Didit's decision completes a join only when its `metadata.agent_key` is that key. A person who types someone else's address sends that owner an email that names the requesting agent key and tells them not to continue. If the owner continues anyway and passes verification, the requesting key joins with the owner's email.
 
 ### Membrane Proof Integrity
 - Generated server-side per DNA, typically includes agent key + DNA hash + timestamp + server signature.
@@ -1031,6 +1136,7 @@ Two things bound this. Requests are served over HTTPS (see Transport Security be
 | `invite_code` | `invite_code` | none | N/A | Validated at join time |
 | `agent_allow_list` | none | Sign nonce | base64 ed25519 signature | Pre-approved agent keys only. Nonce in `metadata.nonce`. |
 | `hc_auth_approval` | none | none (server-side) | N/A (poll `/status`) | Operator/KYC approval via hc-auth server. No client-side challenge — client polls status until approved or blocked. |
+| `didit_with_email` | `email` | Emailed link, then Didit identity verification | N/A (poll `/status`) | Signed join required. See below. |
 | `x-*` | custom | custom | custom | Developer-defined methods |
 
 ### Method Composition: AND / OR
@@ -1132,6 +1238,77 @@ Can be combined in OR groups:
   "auth_methods": [{ "any_of": ["hc_auth_approval", "invite_code"] }]
 }
 ```
+
+### Didit With Email
+
+The `didit_with_email` method verifies an identity with Didit, started from a link emailed to `claims.email`. The join must be signed (Section 3.2). The email carries a link to the pages of Section 3.18, and nothing reaches Didit until the person presses Continue there. The email goes out only once every other method has admitted the agent, so a join refused for another reason sends nothing and counts toward no email limit. It does not go out when another challenge in its `any_of` group is already complete, such as a valid invite code. The client polls `GET /v1/join/{session}/status` until Didit approves.
+
+Challenge sent to client. `group` is present only in an `any_of` group, and status and resume add `completed`:
+```json
+{
+  "id": "ch_didit_1792591331000",
+  "type": "didit_with_email",
+  "description": "Open the link we sent to jo***@example.com",
+  "expires_at": "2026-10-28T14:02:11.000Z",
+  "group": "g_0",
+  "metadata": { "state": "link_sent", "resend_available_at": "2026-10-21T14:03:11.000Z" }
+}
+```
+
+| `metadata.state` | Meaning | Didit status |
+|------------------|---------|--------------|
+| `link_sent` | No Didit session yet, or the last one is gone or is not this join's | none |
+| `in_progress` | A Didit session is open | `Not Started`, `In Progress`, `Resubmitted`, `Awaiting User` |
+| `in_review` | Didit reviewers are deciding | `In Review` |
+| `declined` | It did not pass. The link can start another attempt. | `Declined` |
+| `expired` | It timed out or was left. The link can start another attempt. | `Expired`, `Abandoned`, `Kyc Expired` |
+| `approved` | Didit approved it, and the challenge is complete | `Approved` |
+
+- **`claims.email`** must be one plain address in printable ASCII: no display name, list, quoting, slash or whitespace, and at most 254 characters once the spaces around it are dropped. Otherwise the join answers `400 missing_claims`, inside an `any_of` group too unless another method admits the agent.
+- **`poll_interval_ms`** is 60000 while a link challenge is in review, and 5000 otherwise.
+- **A decision completes the challenge** only when its status is `Approved` and four fields match: `workflow_id` is `didit.workflow_id`, `vendor_data` is the keyed hash of the email, `environment` is `didit.environment`, and `metadata.agent_key` is the joining key. A decision that names another email or key is forgotten, and the state returns to `link_sent`. One that names another workflow or environment is a configuration fault: the service logs it and answers as while Didit is unreachable, keeping the session as it was. A session recorded under an earlier `didit.workflow_id` is forgotten instead.
+- **One email, several agent keys.** Didit keeps one open session per email. Continue hands it to the pressing key while it is `Not Started`. Once another key has started it, Continue answers `409` with "Another device is verifying this email. Finish there, or try again when it ends." and changes nothing. Each key completes only from a session that names it, and a key that Didit already approved for this email completes again without a new verification. The sessions of one email share `didit.max_sessions_per_email`. A session whose Didit status this service does not know never counts as a used attempt: Continue answers unavailable while Didit lists one.
+- **Read interval.** Status, resume and the done page read a decision at most once per interval, however many of them arrive at once: 15 seconds while the session is open, 60 seconds in review, and 300 seconds after a decline or expiry. An approved session is never read again. A failed read counts as a read, so that session waits its interval before the next. Continue ignores this interval, since it decides which session the browser goes to.
+- **Expiry.** The challenge and its session expire `didit.link_ttl_seconds` after the join.
+- **Email limits.** At most `didit.max_emails_per_address` emails to one address and `didit.max_emails_per_agent` for one agent key in 24 hours, at least `didit.resend_interval_seconds` apart for one address. A refusal answers `429 rate_limited` with `Retry-After`, which for an agent key over its limit is that key's wait alone. Neither a refused email nor one that fails to send counts.
+- **Billed sessions.** A stack opens no new Didit session once its reads found `didit.max_sessions_per_day` sessions billed in the last 24 hours. Its session store counts them, so with the memory store each process counts its own. A session counts once, the first time a read of a join's recorded session finds it `In Review`, `Approved` or `Declined`, which is when Didit bills it. A billed session that status, resume, the done page and Continue never read again does not count. Past the limit, Continue answers the unavailable page and logs `didit.max_sessions_per_day`. Sessions already open at the limit can still finish and be billed.
+- **Limits on the Cloudflare KV store.** Each counted event is a KV key of its own, and KV can take 60 seconds or more to list a new key. So emails, Continue presses, decision reads and billed sessions close together in time can each pass their limit, and ones made at the same moment can each be refused. The rule that a link's progress never goes back holds there only at best: KV has no compare-and-swap and can serve a stale read.
+
+Config:
+```json
+{
+  "auth_methods": [{ "any_of": ["agent_allow_list", "delegated_verification", "didit_with_email"] }],
+  "base_url": "https://join.example.com",
+  "email": { "provider": "sendgrid", "api_key": "...", "from": "join@example.com" },
+  "didit": {
+    "api_key": "...",
+    "subject_key": "<64 hex characters>",
+    "workflow_id": "<workflow uuid>",
+    "environment": "live"
+  }
+}
+```
+
+`didit` config fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `api_key` | string | yes | A named Didit API key with Sessions write and Decisions read, limited to this workflow |
+| `subject_key` | string | yes | 32 bytes as 64 hex characters. Keys the hash of each email that Didit sees as `vendor_data`. Never rotate it: a new key hides every earlier verification. Every stack on the workflow holds the same one. |
+| `workflow_id` | string | yes | The Didit workflow UUID |
+| `environment` | `"live"` \| `"sandbox"` | yes | Must match the environment of the Didit application that `api_key` belongs to |
+| `max_sessions_per_email` | number | no | Didit sessions one email can open, across every agent key. Default: 3 |
+| `max_sessions_per_day` | number | no | Didit sessions found billed in 24 hours after which a stack opens no new one. Default: 100 |
+| `link_ttl_seconds` | number | no | How long the challenge and its links last. Default: 604800 (7 days) |
+| `resend_interval_seconds` | number | no | Least time between two emails to one address. Default: 60 |
+| `max_emails_per_address` | number | no | Emails to one address in 24 hours. Default: 5 |
+| `max_emails_per_agent` | number | no | Emails for one agent key in 24 hours. Default: 5 |
+| `email_subject` | string | no | Takes the same placeholders as `email_template` but `{{link}}`. Default: `Verify your identity to join {{network}}` |
+| `email_template` | string | no | Plain-text body. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the joining key as `uhCAk3fQ…9xQ2ab`). Must contain `{{link}}` |
+
+`resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, or beside `email_code`. A `didit` section without the method changes nothing.
+
+**What reaches hc-auth.** The join reaches hc-auth exactly as an `email_code` join does. Once it is ready, the service registers the agent key, and `hc_auth.forward_claims: ["email"]` puts `claims.email`, as sent, into the registration metadata. With `hc_auth_approval` among the methods, hc-auth authorizes the key and the service registers nothing. Nothing from Didit reaches hc-auth.
 
 ### EVM Signature Challenge Metadata
 
@@ -1479,6 +1656,7 @@ type AuthMethod =
   | 'agent_allow_list'
   | 'hc_auth_approval'
   | 'delegated_verification'
+  | 'didit_with_email'
   | `x-${string}`;
 
 interface AuthMethodGroup {
@@ -1536,6 +1714,9 @@ interface JoinRequest {
   claims?: Record<string, string>;
   /** Named network to join. Must be registered with the service (see network_registration). */
   network?: string;
+  /** signature signs join:{timestamp}:{claims.email}, the email empty when absent. Required by didit_with_email. */
+  timestamp?: string;
+  signature?: string;
 }
 
 interface JoinResponse {
@@ -1554,6 +1735,46 @@ interface Challenge {
   completed?: boolean;
   /** Challenges sharing the same group are OR alternatives. */
   group?: string;
+}
+
+/** `metadata.state` of a `didit_with_email` challenge. */
+type DiditWithEmailState =
+  | 'link_sent'
+  | 'in_progress'
+  | 'in_review'
+  | 'declined'
+  | 'expired'
+  | 'approved';
+
+/** `metadata` of a `didit_with_email` challenge, exactly. */
+interface DiditWithEmailMetadata {
+  state: DiditWithEmailState;
+  /** Earliest time a resend can succeed. The email limits can still refuse it with 429. */
+  resend_available_at: string;
+}
+
+// --- /v1/join/resume ---
+
+interface ResumeRequest {
+  agent_key: string;
+  timestamp: string;
+  signature: string;
+  network?: string;
+}
+
+interface ResumeResponse {
+  session: string;
+  status: 'pending' | 'rejected';
+  challenges?: Challenge[];
+  reason?: string;
+  poll_interval_ms?: number;
+}
+
+// --- /v1/join/{session}/resend ---
+
+/** Answered with a pending StatusResponse. */
+interface ResendRequest {
+  challenge_id: string;
 }
 
 // --- /v1/join/{session}/verify ---

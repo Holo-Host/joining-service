@@ -168,7 +168,7 @@ export async function startServer(
   }
 
   const emailTransport = buildEmailTransport(config);
-  const authPlugins = buildAuthPlugins(config, { emailTransport, hcAuthClient, allowedAgentStore });
+  const authPlugins = buildAuthPlugins(config, { emailTransport, hcAuthClient, allowedAgentStore, sessionStore });
   const proofGenerator = await buildProofGenerator(config);
 
   const resolvedUrlProvider = urlProvider ?? new StaticUrlProvider();

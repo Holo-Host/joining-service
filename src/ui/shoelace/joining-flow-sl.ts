@@ -53,7 +53,9 @@ export class JoiningFlowSl extends JoiningFlow {
               <joining-challenge-dialog-sl
                 .challenge=${this.currentChallenge}
                 .open=${true}
+                .notice=${this.pollNotice ?? this.resendNotice}
                 @challenge-response=${this.handleChallengeResponse}
+                @challenge-resend=${this.handleChallengeResend}
                 @challenge-cancelled=${() => this.handleError(new Error('Challenge cancelled'))}
               ></joining-challenge-dialog-sl>
             `

@@ -2,12 +2,18 @@ import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { createRef, ref } from 'lit/directives/ref.js';
 import type { Challenge } from '../types.js';
+import {
+  LINK_CHALLENGE_TYPE,
+  ResendClock,
+  linkStateLine,
+  type ChallengeResendDetail,
+} from './link-challenge.js';
 
 /** Challenge types that are handled automatically (no user input). */
 const AUTO_CHALLENGE_TYPES = new Set(['agent_allow_list', 'open']);
 
 /** Challenge types that show a waiting/polling state instead of an input. */
-const POLLING_TYPES = new Set(['hc_auth_approval']);
+const POLLING_TYPES = new Set(['hc_auth_approval', LINK_CHALLENGE_TYPE]);
 
 export interface ChallengeResponseDetail {
   challengeId: string;
@@ -19,6 +25,7 @@ export interface ChallengeResponseDetail {
  *
  * For invite_code, email_code, sms_code: shows a text input.
  * For hc_auth_approval: shows a waiting indicator (no input).
+ * For didit_with_email: shows the challenge's state and a resend button (no input).
  * For agent_allow_list, open: not rendered (handled automatically by orchestrator).
  * For unknown/custom types: shows a generic text input + slot.
  */
@@ -30,10 +37,16 @@ export class JoiningChallengeDialog extends LitElement {
   @property({ type: Boolean, reflect: true })
   open = false;
 
+  /** A message to show under the resend button, such as why the last resend failed. */
+  @property({ attribute: false })
+  notice?: string;
+
   @state()
   private inputValue = '';
 
   private dialogRef = createRef<HTMLDialogElement>();
+
+  private resendClock = new ResendClock(this, () => this.challenge);
 
   /** Disable shadow DOM so consumers can style freely. */
   protected override createRenderRoot() {
@@ -105,6 +118,17 @@ export class JoiningChallengeDialog extends LitElement {
     );
   }
 
+  private handleResend() {
+    if (!this.challenge) return;
+    this.dispatchEvent(
+      new CustomEvent<ChallengeResendDetail>('challenge-resend', {
+        detail: { challengeId: this.challenge.id },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
   private handleDialogClose() {
     // Native dialog was closed (e.g. Escape key) — treat as cancel
     if (this.open) {
@@ -131,7 +155,20 @@ export class JoiningChallengeDialog extends LitElement {
       >
         <p part="description">${this.challenge.description}</p>
 
-        ${isPolling
+        ${this.challenge.type === LINK_CHALLENGE_TYPE
+          ? html`
+              <p part="state" role="status" aria-live="polite">${linkStateLine(this.challenge)}</p>
+              <div part="actions">
+                <button
+                  type="button"
+                  part="resend-button"
+                  ?disabled=${!this.resendClock.ready}
+                  @click=${this.handleResend}
+                >Send the email again</button>
+              </div>
+              ${this.notice ? html`<p part="notice" role="alert">${this.notice}</p>` : nothing}
+            `
+          : isPolling
           ? html`
               <div part="waiting" role="status" aria-live="polite">
                 <slot name="waiting-indicator">Waiting for approval...</slot>

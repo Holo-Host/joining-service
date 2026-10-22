@@ -9,7 +9,7 @@ export { StaticUrlProvider } from './urls/static.js';
 export { KvUrlProvider, type KVNamespace as UrlKVNamespace } from './urls/kv.js';
 
 // Session
-export type { SessionStore, SessionData, ChallengeState } from './session/store.js';
+export type { SessionStore, LinkSessionStore, SessionData, ChallengeState } from './session/store.js';
 export { MemorySessionStore } from './session/memory-store.js';
 export { SqliteSessionStore } from './session/sqlite-store.js';
 export { KvSessionStore } from './session/kv-store.js';

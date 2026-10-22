@@ -1,8 +1,16 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { ServiceConfig, RoleConfig } from './config.js';
-import type { AuthMethodPlugin, JoinContext } from './auth-methods/plugin.js';
+import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './auth-methods/plugin.js';
 import type { SessionStore, SessionData, ChallengeState } from './session/store.js';
+import { holdsLink } from './session/store.js';
+import {
+  DiditWithEmailAuthMethod,
+  pollIntervalMs,
+  takeLink,
+} from './auth-methods/didit-with-email.js';
+import { InviteCodeAuthMethod } from './auth-methods/invite-code.js';
+import { createDiditRoutes } from './routes/didit-links.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
 import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
@@ -10,6 +18,7 @@ import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
   validateAgentKey,
+  isCanonicalAgentKey,
   toBase64,
   fromBase64,
   decodeHashFromBase64,
@@ -191,25 +200,33 @@ function isGroup(entry: AuthMethodEntry): entry is AuthMethodGroup {
   return typeof entry === 'object' && 'any_of' in entry;
 }
 
-/**
- * Shared helper: create a session in 'ready' state, notifying hc-auth and linkers.
- * Used by both the delegated verification fast path and the normal auth completion path.
- */
+/** The hc-auth and linker steps of every ready path. A join that holds an hc_auth_approval challenge leaves authorizing the key to hc-auth. */
+async function notifyReady(
+  ctx: ServiceContext,
+  agentKey: string,
+  claims: Record<string, string>,
+  challenges: ChallengeState[],
+): Promise<void> {
+  if (usedHcAuthApproval(challenges)) {
+    await writeVerifiedClaims(ctx, agentKey, claims);
+  } else {
+    await notifyHcAuth(ctx, agentKey, claims);
+  }
+  await notifyLinkers(ctx, agentKey);
+}
+
+/** Runs the ready steps before writing, so a failed required step creates nothing. */
 async function createReadySession(
   ctx: ServiceContext,
   sessionId: string,
   agentKey: string,
   claims: Record<string, string>,
   challenges: ChallengeState[],
-  options?: { skipHcAuth?: boolean },
+  options?: { beforeCreate?: () => Promise<void> },
   network?: string,
 ): Promise<void> {
-  if (options?.skipHcAuth) {
-    await writeVerifiedClaims(ctx, agentKey, claims);
-  } else {
-    await notifyHcAuth(ctx, agentKey, claims);
-  }
-  await notifyLinkers(ctx, agentKey);
+  await notifyReady(ctx, agentKey, claims, challenges);
+  await options?.beforeCreate?.();
 
   await ctx.sessionStore.create({
     id: sessionId,
@@ -251,14 +268,33 @@ function usedHcAuthApproval(challenges: ChallengeState[]): boolean {
   return challenges.some((cs) => cs.challenge.type === 'hc_auth_approval');
 }
 
-/**
- * Collapses the statically configured network's own happ id to the same
- * (undefined) session scope as an omitted `network` -- naming it explicitly
- * must behave exactly like omitting `network` entirely, so both spellings
- * land in one session scope instead of splitting one agent across two
- * "networks" that are really the same one. Shared by join and reconnect so
- * the collapse rule can't drift between the two call sites.
- */
+function diditMethod(ctx: ServiceContext): DiditWithEmailAuthMethod | undefined {
+  const plugin = ctx.authPlugins.get('didit_with_email');
+  return plugin instanceof DiditWithEmailAuthMethod ? plugin : undefined;
+}
+
+async function sendLinks(
+  didit: DiditWithEmailAuthMethod | undefined,
+  agentKey: string,
+  claims: Record<string, string>,
+  challenges: ChallengeState[],
+): Promise<void> {
+  for (const cs of challenges.filter((c) => c.link)) {
+    const others = cs.group ? challenges.filter((o) => o !== cs && o.group === cs.group) : [];
+    if (!others.some((o) => o.completed)) {
+      try {
+        await didit!.sendFirst(agentKey, claims.email, cs);
+        continue;
+      } catch (e) {
+        if (!(e instanceof JoinRequestError) || others.length === 0) throw e;
+        console.warn(`[didit_with_email] link not sent (${e.code}), so the join goes on with the rest of its any_of group`);
+      }
+    }
+    challenges.splice(challenges.indexOf(cs), 1);
+  }
+}
+
+/** The static network's own happ id is the same session scope as an omitted `network`. */
 function normalizeNetwork(config: ServiceConfig, value: string | undefined): string | undefined {
   return value === config.happ.id ? undefined : value;
 }
@@ -358,14 +394,154 @@ function errorJson(code: string, message: string, status: number) {
   );
 }
 
+/** The validated `agent_key` and normalized `network`, or the 400 that refuses them. */
+function requestScope(
+  ctx: ServiceContext,
+  body: { agent_key?: unknown; network?: unknown },
+): { agentKey: string; network: string | undefined } | Response {
+  const agentKey = body.agent_key;
+  if (!agentKey) {
+    return errorJson('invalid_agent_key', 'agent_key is required', 400);
+  }
+
+  const validation = validateAgentKey(agentKey as string);
+  if (!validation.valid) {
+    return errorJson('invalid_agent_key', validation.reason!, 400);
+  }
+
+  // Refused rather than falling back to the static scope, which would act on
+  // the static network instead of the one asked for. The format check also
+  // bounds `network` before it reaches a KV key or an error body.
+  if (body.network !== undefined && typeof body.network !== 'string') {
+    return errorJson('unknown_network', 'network must be a string', 400);
+  }
+  const network = normalizeNetwork(ctx.config, body.network as string | undefined);
+  if (network !== undefined && !HAPP_ID_RE.test(network)) {
+    return errorJson(
+      'unknown_network',
+      'network does not match the network-id format',
+      400,
+    );
+  }
+  return { agentKey: agentKey as string, network };
+}
+
+const MAX_SIGNED_AHEAD_MS = 30_000;
+// Date.parse alone also reads a string such as `resume:{date}` as a date, which
+// would let one route's signed message pass as reconnect's bare timestamp.
+const SIGNED_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$/;
+
+function timestampError(ctx: ServiceContext, timestamp: string): Response | null {
+  const toleranceSeconds =
+    ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
+  const at = Date.parse(timestamp);
+  if (!SIGNED_TIMESTAMP_RE.test(timestamp) || isNaN(at)) {
+    return errorJson(
+      'timestamp_out_of_range',
+      'Invalid timestamp format',
+      400,
+    );
+  }
+
+  const drift = Math.abs(Date.now() - at);
+  if (drift > toleranceSeconds * 1000) {
+    return errorJson(
+      'timestamp_out_of_range',
+      `Timestamp is ${Math.round(drift / 1000)}s from server time (max ${toleranceSeconds}s)`,
+      400,
+    );
+  }
+  const ahead = at - Date.now();
+  if (ahead > MAX_SIGNED_AHEAD_MS) {
+    return errorJson(
+      'timestamp_out_of_range',
+      `Timestamp is ${Math.round(ahead / 1000)}s ahead of server time (max ${MAX_SIGNED_AHEAD_MS / 1000}s)`,
+      400,
+    );
+  }
+  return null;
+}
+
+async function signedByAgent(
+  agentKey: string,
+  message: string,
+  signature: string,
+): Promise<boolean> {
+  if (!isCanonicalAgentKey(agentKey)) return false;
+  const sigBytes = fromBase64(signature);
+  const msgBytes = new TextEncoder().encode(message);
+  // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey
+  // (skip 3-byte HoloHash prefix, take 32 bytes, skip 4-byte DHT location)
+  const agentKeyBytes = decodeHashFromBase64(agentKey);
+  const publicKey = agentKeyBytes.slice(3, 35);
+
+  try {
+    return await ed.verifyAsync(sigBytes, msgBytes, publicKey);
+  } catch {
+    return false;
+  }
+}
+
+async function signatureError(
+  ctx: ServiceContext,
+  agentKey: string,
+  timestamp: unknown,
+  signature: unknown,
+  message: (timestamp: string) => string,
+): Promise<Response | null> {
+  if (typeof timestamp !== 'string' || typeof signature !== 'string') {
+    return errorJson('invalid_signature', 'timestamp and signature are required', 400);
+  }
+  const stale = timestampError(ctx, timestamp);
+  if (stale) return stale;
+  if (await signedByAgent(agentKey, message(timestamp), signature)) return null;
+  return errorJson(
+    'invalid_signature',
+    'Signature does not verify against agent key',
+    400,
+  );
+}
+
+function pendingView(session: SessionData) {
+  return {
+    challenges: session.challenges.map((cs) => ({
+      ...stripInternal(cs.challenge),
+      completed: cs.completed,
+    })),
+    poll_interval_ms: pollIntervalMs(session.challenges),
+  };
+}
+
+/**
+ * Makes ready a pending session whose requirements are all met, saving
+ * `ready` last. A failed required step leaves the session pending for the
+ * next call to retry.
+ */
+async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): Promise<boolean> {
+  if (session.status !== 'pending' || !allSatisfied(session.challenges)) return false;
+  await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
+  await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
+  session.status = 'ready';
+  return true;
+}
+
+const ALREADY_JOINED =
+  'This agent key has already completed joining this network. Use POST /v1/reconnect instead.';
+
 export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
+  const didit = diditMethod(ctx);
 
   // Without this, any throw escaping a handler becomes Hono's default bare
   // `Internal Server Error` text body -- no code for a client to branch on,
   // and no way to tell a rejected credential from a downstream failure that
   // happened *after* the caller was successfully verified.
   app.onError((err, c) => {
+    if (err instanceof JoinRequestError) {
+      const res = errorJson(err.code, err.message, err.status);
+      if (err.retryAfterSeconds !== undefined) res.headers.set('Retry-After', String(err.retryAfterSeconds));
+      return res;
+    }
     if (err instanceof ServiceUnavailableError) {
       console.error(`[service_unavailable] ${err.message}:`, err.reason);
       return errorJson('service_unavailable', err.message, 503);
@@ -404,8 +580,6 @@ export function createApp(ctx: ServiceContext): Hono {
     const { config } = ctx;
     const happId = c.req.param('happ_id');
 
-    // The statically configured network's id aliases the bare endpoint --
-    // same normalization rule as join (see POST /v1/join below).
     if (happId === config.happ.id) {
       return c.json(await buildStaticInfo(ctx));
     }
@@ -445,36 +619,29 @@ export function createApp(ctx: ServiceContext): Hono {
   // ---- POST /v1/join ----
   app.post('/v1/join', async (c) => {
     const body = await c.req.json();
-    const { agent_key, claims = {} } = body;
+    const { claims = {} } = body;
+    const scope = requestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const { agentKey: agent_key, network: requestedNetwork } = scope;
 
-    if (!agent_key) {
-      return errorJson('invalid_agent_key', 'agent_key is required', 400);
-    }
-
-    const validation = validateAgentKey(agent_key);
-    if (!validation.valid) {
-      return errorJson('invalid_agent_key', validation.reason!, 400);
-    }
-
-    // Resolve the named network, if any, before touching any existing
-    // session state below -- a malformed/unregistered/disallowed `network`
-    // must not delete the caller's in-flight pending session as a side effect
-    // of a rejected request.
-    if (body.network !== undefined && typeof body.network !== 'string') {
+    const signed = body.timestamp !== undefined || body.signature !== undefined;
+    if (signed) {
+      const email = typeof claims?.email === 'string' ? claims.email : '';
+      const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => `join:${t}:${email}`);
+      if (refused) return refused;
+    } else if (didit && claims?.email && !body.delegated_verification) {
       return errorJson(
-        'unknown_network',
-        'network must be a string',
+        'signature_required',
+        'A join with an email must be signed: send timestamp and signature',
         400,
       );
     }
-    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
+
+    // Checked before the stale-session delete below, so a refused `network`
+    // leaves the caller's pending session in place.
     let networkRecord: NetworkRecord | undefined;
     if (requestedNetwork !== undefined) {
-      // Cheap format check before the store lookup so junk network names are
-      // rejected without a store round-trip.
-      const record = (ctx.networkStore && HAPP_ID_RE.test(requestedNetwork))
-        ? await ctx.networkStore.get(requestedNetwork)
-        : null;
+      const record = ctx.networkStore ? await ctx.networkStore.get(requestedNetwork) : null;
       if (!record) {
         return errorJson(
           'unknown_network',
@@ -503,15 +670,24 @@ export function createApp(ctx: ServiceContext): Hono {
     // deleted as a stale-pending session below.
     const existing = await ctx.sessionStore.findByAgentKey(agent_key, requestedNetwork);
     if (existing?.status === 'ready') {
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
+    }
+
+    const replacesLink = existing?.status === 'pending' && holdsLink(existing);
+    if (replacesLink && !signed && !body.delegated_verification) {
       return errorJson(
-        'agent_already_joined',
-        'This agent key has already completed joining this network. Use POST /v1/reconnect instead.',
+        'join_in_progress',
+        'Use POST /v1/join/resume, or sign the join to start again',
         409,
       );
     }
+    // A replaced link session is deleted only when this join writes its own,
+    // so a refused join leaves the link working.
+    const dropReplacedLink = async () => {
+      if (replacesLink) await ctx.sessionStore.delete(existing.id);
+    };
 
-    // Delete any stale pending session for this agent
-    if (existing) {
+    if (existing && !replacesLink) {
       await ctx.sessionStore.delete(existing.id);
     }
 
@@ -571,7 +747,7 @@ export function createApp(ctx: ServiceContext): Hono {
       });
 
       const sessionId = generateSessionId();
-      await createReadySession(ctx, sessionId, agent_key, claims, [], undefined, requestedNetwork);
+      await createReadySession(ctx, sessionId, agent_key, claims, [], { beforeCreate: dropReplacedLink }, requestedNetwork);
 
       return c.json({ session: sessionId, status: 'ready' }, 201);
     }
@@ -595,6 +771,7 @@ export function createApp(ctx: ServiceContext): Hono {
         // OR group: create challenges for each method, tag with shared group id
         const groupId = `g_${groupIndex++}`;
         let groupHasChallenges = false;
+        let refusal: JoinRequestError | undefined;
 
         for (const method of entry.any_of) {
           const plugin = ctx.authPlugins.get(method);
@@ -618,10 +795,12 @@ export function createApp(ctx: ServiceContext): Hono {
                   ? new Date(ch.expires_at).getTime()
                   : Date.now() + 600_000,
                 group: groupId,
+                ...takeLink(ch),
               });
               groupHasChallenges = true;
             }
-          } catch {
+          } catch (e: unknown) {
+            if (e instanceof JoinRequestError) refusal ??= e;
             // In an OR group, individual methods may fail (e.g. missing claims).
             // That's fine as long as at least one method in the group succeeds.
           }
@@ -629,6 +808,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
         // If no method in the OR group produced challenges, the group is unsatisfiable
         if (!groupHasChallenges) {
+          if (refusal) throw refusal;
           return errorJson('join_rejected', 'No eligible auth method in group', 403);
         }
       } else {
@@ -656,9 +836,11 @@ export function createApp(ctx: ServiceContext): Hono {
               expires_at: ch.expires_at
                 ? new Date(ch.expires_at).getTime()
                 : Date.now() + 600_000,
+              ...takeLink(ch),
             });
           }
         } catch (e: unknown) {
+          if (e instanceof JoinRequestError) throw e;
           const message = e instanceof Error ? e.message : 'Unknown error';
           return errorJson('missing_claims', message, 400);
         }
@@ -687,28 +869,40 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
-    const finalStatus = allSatisfied(allChallenges) ? 'ready' : status;
+    let finalStatus: typeof status;
+    try {
+      // After every other method and the invite check, so a refused join sends no email.
+      await sendLinks(didit, agent_key, claims, allChallenges);
+      finalStatus = allSatisfied(allChallenges) ? 'ready' : status;
 
-    if (finalStatus === 'ready') {
-      await createReadySession(
-        ctx,
-        sessionId,
-        agent_key,
-        claims,
-        allChallenges,
-        { skipHcAuth: usedHcAuthApproval(allChallenges) },
-        requestedNetwork,
-      );
-    } else {
-      await ctx.sessionStore.create({
-        id: sessionId,
-        agent_key,
-        status: finalStatus,
-        challenges: allChallenges,
-        claims,
-        created_at: Date.now(),
-        network: requestedNetwork,
-      });
+      if (finalStatus === 'ready') {
+        await createReadySession(
+          ctx,
+          sessionId,
+          agent_key,
+          claims,
+          allChallenges,
+          { beforeCreate: dropReplacedLink },
+          requestedNetwork,
+        );
+      } else {
+        await dropReplacedLink();
+        await ctx.sessionStore.create({
+          id: sessionId,
+          agent_key,
+          status: finalStatus,
+          challenges: allChallenges,
+          claims,
+          created_at: Date.now(),
+          network: requestedNetwork,
+        });
+      }
+    } catch (e) {
+      const invite = ctx.authPlugins.get('invite_code');
+      if (invite instanceof InviteCodeAuthMethod && allChallenges.some((cs) => cs.challenge.type === 'invite_code' && cs.completed)) {
+        invite.restore(claims.invite_code);
+      }
+      throw e;
     }
 
     const response: Record<string, unknown> = {
@@ -720,7 +914,7 @@ export function createApp(ctx: ServiceContext): Hono {
       response.challenges = allChallenges
         .filter((cs) => !cs.completed)
         .map((cs) => stripInternal(cs.challenge));
-      response.poll_interval_ms = 2000;
+      response.poll_interval_ms = pollIntervalMs(allChallenges);
     }
 
     return c.json(response, 201);
@@ -759,6 +953,7 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     if (challengeState.completed) {
+      if (await completeIfSatisfied(ctx, session)) return c.json({ status: 'ready' });
       return errorJson(
         'challenge_not_found',
         'Challenge already completed',
@@ -806,29 +1001,15 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     challengeState.completed = true;
+    await ctx.sessionStore.update(sessionId, { challenges: session.challenges });
+    await completeIfSatisfied(ctx, session);
 
-    const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
-
-    await ctx.sessionStore.update(sessionId, {
-      status: newStatus,
-      challenges: session.challenges,
-    });
-
-    if (newStatus === 'ready') {
-      if (usedHcAuthApproval(session.challenges)) {
-        await writeVerifiedClaims(ctx, session.agent_key, session.claims);
-      } else {
-        await notifyHcAuth(ctx, session.agent_key, session.claims);
-      }
-      await notifyLinkers(ctx, session.agent_key);
-    }
-
-    const resp: Record<string, unknown> = { status: newStatus };
-    if (newStatus === 'pending') {
+    const resp: Record<string, unknown> = { status: session.status };
+    if (session.status === 'pending') {
       resp.challenges_remaining = session.challenges
         .filter((cs) => !cs.completed)
         .map((cs) => stripInternal(cs.challenge));
-      resp.poll_interval_ms = 2000;
+      resp.poll_interval_ms = pollIntervalMs(session.challenges);
     }
 
     return c.json(resp);
@@ -876,9 +1057,7 @@ export function createApp(ctx: ServiceContext): Hono {
       if (changed) {
         const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
         if (newStatus === 'ready') {
-          // hc-auth already authorized; write verified claims and notify linkers
-          await writeVerifiedClaims(ctx, session.agent_key, session.claims);
-          await notifyLinkers(ctx, session.agent_key);
+          await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
         }
         await ctx.sessionStore.update(sessionId, {
           status: newStatus,
@@ -888,14 +1067,15 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
+    }
+    await completeIfSatisfied(ctx, session);
+
     const resp: Record<string, unknown> = { status: session.status };
 
     if (session.status === 'pending') {
-      resp.challenges = session.challenges.map((cs) => ({
-        ...stripInternal(cs.challenge),
-        completed: cs.completed,
-      }));
-      resp.poll_interval_ms = 2000;
+      Object.assign(resp, pendingView(session));
     }
 
     if (session.status === 'rejected' && session.reason) {
@@ -1017,6 +1197,57 @@ export function createApp(ctx: ServiceContext): Hono {
     );
   }
 
+  // ---- Emailed link pages and resend for didit_with_email ----
+  if (didit) {
+    app.route(
+      '',
+      createDiditRoutes(didit, ctx.sessionStore, {
+        finishJoin: async (session) => {
+          try {
+            await completeIfSatisfied(ctx, session);
+          } catch (err) {
+            console.error('[didit_with_email] ready path failed; the next call retries:', err);
+          }
+        },
+        pendingView,
+      }),
+    );
+  }
+
+  // ---- POST /v1/join/resume ----
+  app.post('/v1/join/resume', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== 'object') {
+      return errorJson('invalid_json', 'Request body must be a JSON object', 400);
+    }
+    const scope = requestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const refused = await signatureError(ctx, scope.agentKey, body.timestamp, body.signature, (t) => `resume:${t}`);
+    if (refused) return refused;
+
+    const session = await ctx.sessionStore.findByAgentKey(scope.agentKey, scope.network);
+    if (!session) {
+      return errorJson(
+        'join_not_found',
+        'This agent key has no join in progress. Start one with POST /v1/join.',
+        404,
+      );
+    }
+
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
+    }
+    await completeIfSatisfied(ctx, session);
+
+    if (session.status === 'ready') {
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
+    }
+    if (session.status === 'rejected') {
+      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
+    }
+    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+  });
+
   // ---- POST /v1/reconnect ----
   app.post('/v1/reconnect', async (c) => {
     if (ctx.config.reconnect?.enabled === false) {
@@ -1024,65 +1255,13 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     const body = await c.req.json();
-    const { agent_key, timestamp, signature } = body;
 
-    if (!agent_key) {
-      return errorJson('invalid_agent_key', 'agent_key is required', 400);
-    }
+    const scope = requestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const { agentKey: agent_key, network: requestedNetwork } = scope;
 
-    const validation = validateAgentKey(agent_key);
-    if (!validation.valid) {
-      return errorJson('invalid_agent_key', validation.reason!, 400);
-    }
-
-    // Same validation join applies to `network` (src/app.ts join handler,
-    // just above): reject a non-string or malformed value outright rather
-    // than silently falling back to the static scope, which would hand back
-    // a *different* network's token than the one asked for -- worse than an
-    // error, since the caller has no way to notice. The format check also
-    // bounds `network` before it reaches a store key or an error message
-    // (unbounded input there breaks KV's key-size limit and bloats error
-    // bodies).
-    if (body.network !== undefined && typeof body.network !== 'string') {
-      return errorJson('unknown_network', 'network must be a string', 400);
-    }
-    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
-    if (requestedNetwork !== undefined && !HAPP_ID_RE.test(requestedNetwork)) {
-      return errorJson(
-        'unknown_network',
-        'network does not match the network-id format',
-        400,
-      );
-    }
-
-    if (!timestamp || !signature) {
-      return errorJson(
-        'invalid_signature',
-        'timestamp and signature are required',
-        400,
-      );
-    }
-
-    // Validate timestamp is within tolerance
-    const toleranceSeconds =
-      ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
-    const tsDate = new Date(timestamp);
-    if (isNaN(tsDate.getTime())) {
-      return errorJson(
-        'timestamp_out_of_range',
-        'Invalid timestamp format',
-        400,
-      );
-    }
-
-    const drift = Math.abs(Date.now() - tsDate.getTime());
-    if (drift > toleranceSeconds * 1000) {
-      return errorJson(
-        'timestamp_out_of_range',
-        `Timestamp is ${Math.round(drift / 1000)}s from server time (max ${toleranceSeconds}s)`,
-        400,
-      );
-    }
+    const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => t);
+    if (refused) return refused;
 
     // Verify agent has joined -- linker/gateway URLs are service-wide, not
     // per-network, so any ready session for this agent satisfies reconnect.
@@ -1092,29 +1271,6 @@ export function createApp(ctx: ServiceContext): Hono {
         'agent_not_joined',
         'This agent key has not completed joining',
         403,
-      );
-    }
-
-    // Verify ed25519 signature of the timestamp string
-    const sigBytes = fromBase64(signature);
-    const msgBytes = new TextEncoder().encode(timestamp);
-    // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey
-    // (skip 3-byte HoloHash prefix, take 32 bytes, skip 4-byte DHT location)
-    const agentKeyBytes = decodeHashFromBase64(agent_key);
-    const publicKey = agentKeyBytes.slice(3, 35);
-
-    let valid: boolean;
-    try {
-      valid = await ed.verifyAsync(sigBytes, msgBytes, publicKey);
-    } catch {
-      valid = false;
-    }
-
-    if (!valid) {
-      return errorJson(
-        'invalid_signature',
-        'Signature does not verify against agent key',
-        400,
       );
     }
 
