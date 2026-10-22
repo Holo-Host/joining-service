@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import type { SessionData, SessionStore } from '../session/store.js';
 import type { DiditWithEmailAuthMethod } from '../auth-methods/didit-with-email.js';
 import { TEXT, donePage, landingPage, messagePage, redirectTo } from '../auth-methods/didit-with-email-pages.js';
@@ -11,16 +11,14 @@ export interface DiditRouteHooks {
   pendingView(session: SessionData): object;
 }
 
-/** A link page's handler, answering any failure with a page rather than the API's JSON error. */
-function page(handler: (c: Context) => Promise<Response>): (c: Context) => Promise<Response> {
-  return async (c) => {
-    try {
-      return await handler(c);
-    } catch (err) {
-      console.error('[didit_with_email] link page failed:', err);
-      return messagePage(TEXT.unavailable, 503);
-    }
-  };
+/** A link page, answering any failure with a page rather than the API's JSON error. */
+async function page(render: () => Promise<Response>): Promise<Response> {
+  try {
+    return await render();
+  } catch (err) {
+    console.error('[didit_with_email] link page failed:', err);
+    return messagePage(TEXT.unavailable, 503);
+  }
 }
 
 /** The emailed link's pages, and the resend of its email. */
@@ -32,7 +30,7 @@ export function createDiditRoutes(
   const app = new Hono();
 
   // ---- GET /v1/didit/:token ----
-  app.get('/v1/didit/:token', page(async (c) => {
+  app.get('/v1/didit/:token', (c) => page(async () => {
     const found = await method.findLink(c.req.param('token'));
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
@@ -45,7 +43,7 @@ export function createDiditRoutes(
   }));
 
   // ---- POST /v1/didit/:token ----
-  app.post('/v1/didit/:token', page(async (c) => {
+  app.post('/v1/didit/:token', (c) => page(async () => {
     const found = await method.findLink(c.req.param('token'));
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
@@ -69,7 +67,7 @@ export function createDiditRoutes(
   }));
 
   // ---- GET /v1/didit/done/:credential ----
-  app.get('/v1/didit/done/:credential', page(async (c) => {
+  app.get('/v1/didit/done/:credential', (c) => page(async () => {
     const found = await method.findDone(c.req.param('credential'));
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
