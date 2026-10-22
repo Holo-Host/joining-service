@@ -61,6 +61,8 @@ export function createDiditRoutes(
         return messagePage(TEXT.inReview);
       case 'rejected':
         return messagePage(TEXT.rejected, 403);
+      case 'busy':
+        return messagePage(TEXT.otherDevice, 409);
       case 'unavailable':
         return messagePage(TEXT.unavailable, 503);
     }

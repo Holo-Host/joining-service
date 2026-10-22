@@ -78,6 +78,7 @@ export type ContinueOutcome =
   | { kind: 'approved' }
   | { kind: 'in_review' }
   | { kind: 'rejected' }
+  | { kind: 'busy' }
   | { kind: 'unavailable' };
 
 interface FoundLink {
@@ -326,7 +327,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       }
       const field = this.mismatch(decision, link, session.agent_key);
       if (state === 'in_progress' && (!field || field === 'metadata.agent_key')) {
-        return this.open(session, cs);
+        return field && decision.status !== 'Not Started' ? { kind: 'busy' } : this.open(session, cs);
       }
       if (field) console.warn(`[didit_with_email] listed session ${row.session_id} is not this join's: ${field} differs`);
       if (field || (state !== 'approved' && state !== 'in_review')) continue;

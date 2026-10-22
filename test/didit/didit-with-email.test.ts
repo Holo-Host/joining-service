@@ -463,6 +463,15 @@ describe('POST /v1/didit/{token}', () => {
     ["this key's approval", { seeds: [['Approved', 'own']], code: 200, polled: { status: 'ready' }, says: VERIFIED }],
     ["another key's approval", { seeds: [['Approved', 'other']], code: 303, creates: 1, polled: { status: 'pending' } }],
     [
+      "another key's session in progress",
+      {
+        seeds: [['In Progress', 'other']],
+        code: 409,
+        polled: { status: 'pending', challenges: [{ metadata: { state: 'link_sent' } }] },
+        says: 'Another device is verifying this email. Finish there, or try again when it ends.',
+      },
+    ],
+    [
       "this key's session in review",
       {
         seeds: [['In Review', 'own']],

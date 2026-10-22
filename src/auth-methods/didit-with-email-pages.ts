@@ -20,6 +20,7 @@ export const TEXT = {
   notPassedLanding: 'Your last verification did not pass. Continue to start a new attempt.',
   notFound: 'We could not find your verification. To start again, open the link in your email and press Continue.',
   rejected: NO_ATTEMPTS_LEFT,
+  otherDevice: 'Another device is verifying this email. Finish there, or try again when it ends.',
 };
 
 function escape(text: string): string {
