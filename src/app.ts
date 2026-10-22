@@ -165,23 +165,30 @@ function isGroup(entry: AuthMethodEntry): entry is AuthMethodGroup {
   return typeof entry === 'object' && 'any_of' in entry;
 }
 
-/**
- * Shared helper: create a session in 'ready' state, notifying hc-auth and linkers.
- * Used by both the delegated verification fast path and the normal auth completion path.
- */
+/** The hc-auth and linker steps of every ready path. A join that holds an hc_auth_approval challenge leaves authorizing the key to hc-auth. */
+async function notifyReady(
+  ctx: ServiceContext,
+  agentKey: string,
+  claims: Record<string, string>,
+  challenges: ChallengeState[],
+): Promise<void> {
+  if (!usedHcAuthApproval(challenges)) {
+    await notifyHcAuth(ctx, agentKey, claims);
+  }
+  await notifyLinkers(ctx, agentKey);
+}
+
+/** Runs the ready steps before writing, so a failed required step creates nothing. */
 async function createReadySession(
   ctx: ServiceContext,
   sessionId: string,
   agentKey: string,
   claims: Record<string, string>,
   challenges: ChallengeState[],
-  options?: { skipHcAuth?: boolean; beforeCreate?: () => Promise<void> },
+  options?: { beforeCreate?: () => Promise<void> },
   network?: string,
 ): Promise<void> {
-  if (!options?.skipHcAuth) {
-    await notifyHcAuth(ctx, agentKey, claims);
-  }
-  await notifyLinkers(ctx, agentKey);
+  await notifyReady(ctx, agentKey, claims, challenges);
   await options?.beforeCreate?.();
 
   await ctx.sessionStore.create({
@@ -466,21 +473,14 @@ function pendingView(session: SessionData) {
 }
 
 /**
- * Makes ready a pending session whose requirements are all met, through the
- * hc-auth and linker steps every ready path takes, saving `ready` last. A
- * failed required step leaves the session pending for the next call to retry.
+ * Makes ready a pending session whose requirements are all met, saving
+ * `ready` last. A failed required step leaves the session pending for the
+ * next call to retry.
  */
-async function completePendingJoin(ctx: ServiceContext, session: SessionData): Promise<void> {
-  if (!usedHcAuthApproval(session.challenges)) {
-    await notifyHcAuth(ctx, session.agent_key, session.claims);
-  }
-  await notifyLinkers(ctx, session.agent_key);
-  await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
-}
-
 async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): Promise<void> {
   if (session.status !== 'pending' || !allSatisfied(session.challenges)) return;
-  await completePendingJoin(ctx, session);
+  await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
+  await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
   session.status = 'ready';
 }
 
@@ -848,7 +848,7 @@ export function createApp(ctx: ServiceContext): Hono {
         agent_key,
         claims,
         allChallenges,
-        { skipHcAuth: usedHcAuthApproval(allChallenges), beforeCreate: dropReplacedLink },
+        { beforeCreate: dropReplacedLink },
         requestedNetwork,
       );
     } else {
@@ -968,10 +968,7 @@ export function createApp(ctx: ServiceContext): Hono {
     });
 
     if (newStatus === 'ready') {
-      if (!usedHcAuthApproval(session.challenges)) {
-        await notifyHcAuth(ctx, session.agent_key, session.claims);
-      }
-      await notifyLinkers(ctx, session.agent_key);
+      await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
     }
 
     const resp: Record<string, unknown> = { status: newStatus };
@@ -1027,8 +1024,7 @@ export function createApp(ctx: ServiceContext): Hono {
       if (changed) {
         const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
         if (newStatus === 'ready') {
-          // hc-auth already authorized; only notify linkers
-          await notifyLinkers(ctx, session.agent_key);
+          await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
         }
         await ctx.sessionStore.update(sessionId, {
           status: newStatus,
