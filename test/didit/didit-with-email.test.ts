@@ -554,6 +554,15 @@ describe('POST /v1/didit/{token}', () => {
     expect(app.didit.sessions).toHaveLength(2);
   });
 
+  it('opens a new session under the daily limit when another one is stamped a moment later', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const app = await joinedApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_day: 2 } });
+    const other = await joined(app.request, app.emails, await signingAgent(), 'grace@example.com');
+    await pressContinue(app.request, app.token);
+    later(-1_000);
+    expect((await pressContinue(app.request, other.token)).status).toBe(303);
+  });
+
   it('changes nothing while Didit is unreachable', async () => {
     const { request, ctx, didit, session, token } = await joinedApp();
     captureLogs();
