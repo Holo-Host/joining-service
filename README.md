@@ -146,7 +146,7 @@ async function onResend(challengeId: string) {
 
 ### Recovery
 
-An agent that joined and then crashed before installing cannot join again: `POST /v1/join` answers `409 agent_already_joined`. `reconnect(agentKey, signTimestamp, network?)` recovers the session token by proving key possession instead, and `reconnectAndProvision(agentKey, signTimestamp, network?)` does that and fetches the provision in one call. `signTimestamp` receives an ISO 8601 string and returns the raw ed25519 signature bytes; signing works before any app is installed, since the key is in lair as soon as `generateAgentPubKey` returns.
+An agent that joined and then crashed before installing cannot join again: `POST /v1/join` answers `409 agent_already_joined`. `reconnect(agentKey, signTimestamp, network?)` recovers the session token by proving key possession instead, and `reconnectAndProvision(agentKey, signTimestamp, network?)` does that and fetches the provision in one call. `signTimestamp` receives the string to sign and returns the raw ed25519 signature bytes of its UTF-8: an ISO 8601 timestamp for `reconnect()`, `join:{timestamp}:{email}` for `join()` and `resume:{timestamp}` for `resume()`; signing works before any app is installed, since the key is in lair as soon as `generateAgentPubKey` returns.
 
 The `network` argument follows the same three forms as `join()`, and should match whichever the original join used.
 

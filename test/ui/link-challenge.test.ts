@@ -344,7 +344,8 @@ describe('JoiningFlow with didit_with_email', () => {
     await completed;
 
     const join = JSON.parse((fetchSpy.mock.calls[1][1] as RequestInit).body as string);
-    expect(join).toMatchObject({ timestamp: sign.mock.calls[0][0], signature: 'AQID' });
+    expect(join.signature).toBe('AQID');
+    expect(sign).toHaveBeenCalledWith(`join:${join.timestamp}:${join.claims.email ?? ''}`);
     expect(statusCalls(fetchSpy)).toBe(37);
 
     document.body.appendChild(document.createElement('div'));

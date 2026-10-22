@@ -66,9 +66,12 @@ export function fakeDnaHash(seed = 0): string {
 }
 
 /** A real ed25519 agent key, and a fresh `{timestamp, signature}` pair it signed. */
+export const joinMessage = (email = '') => (timestamp: string) => `join:${timestamp}:${email}`;
+export const resumeMessage = (timestamp: string) => `resume:${timestamp}`;
+
 export async function signingAgent(): Promise<{
   agentKey: string;
-  sign: (timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
+  sign: (message?: (timestamp: string) => string, timestamp?: string) => Promise<{ timestamp: string; signature: string }>;
   signBytes: (bytes: Uint8Array) => Promise<string>;
 }> {
   const privateKey = ed.utils.randomPrivateKey();
@@ -76,9 +79,9 @@ export async function signingAgent(): Promise<{
   const signBytes = async (bytes: Uint8Array) => Buffer.from(await ed.signAsync(bytes, privateKey)).toString('base64');
   return {
     agentKey,
-    sign: async (timestamp = new Date().toISOString()) => ({
+    sign: async (message = (timestamp: string) => timestamp, timestamp = new Date().toISOString()) => ({
       timestamp,
-      signature: await signBytes(new TextEncoder().encode(timestamp)),
+      signature: await signBytes(new TextEncoder().encode(message(timestamp))),
     }),
     signBytes,
   };

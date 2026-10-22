@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { createTestApp, postJson, signingAgent } from '../helpers.js';
+import { createTestApp, joinMessage, postJson, resumeMessage, signingAgent } from '../helpers.js';
 import { FileTransport } from '../../src/email/file.js';
 import type { ServiceConfig } from '../../src/config.js';
 import type { HcAuthClient } from '../../src/hc-auth/index.js';
@@ -57,7 +57,7 @@ export async function signedJoin(
   email = 'ada@example.com',
   extra: Record<string, unknown> = {},
 ): Promise<Response> {
-  return postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email }, ...(await agent.sign()), ...extra });
+  return postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email }, ...(await agent.sign(joinMessage(typeof email === 'string' ? email : ''))), ...extra });
 }
 
 export function pressContinue(request: Request, token: string): Promise<Response> {
@@ -68,4 +68,4 @@ export async function status(request: Request, session: string) {
   return (await request(`/v1/join/${session}/status`)).json();
 }
 
-export { signingAgent, postJson };
+export { joinMessage, postJson, resumeMessage, signingAgent };

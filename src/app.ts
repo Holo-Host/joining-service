@@ -366,6 +366,8 @@ function signedRequestScope(
   return { agentKey: agentKey as string, network };
 }
 
+const MAX_SIGNED_AHEAD_MS = 30_000;
+
 /** Refuses a missing timestamp or signature, or a malformed or stale timestamp. */
 function timestampError(
   ctx: ServiceContext,
@@ -402,14 +404,14 @@ function timestampError(
   return null;
 }
 
-/** Whether `signature` is the agent key's ed25519 signature over the exact `timestamp` string. */
+/** Whether `signature` is the agent key's ed25519 signature over the UTF-8 bytes of `message`. */
 async function signedByAgent(
   agentKey: string,
-  timestamp: string,
+  message: string,
   signature: string,
 ): Promise<boolean> {
   const sigBytes = fromBase64(signature);
-  const msgBytes = new TextEncoder().encode(timestamp);
+  const msgBytes = new TextEncoder().encode(message);
   // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey
   // (skip 3-byte HoloHash prefix, take 32 bytes, skip 4-byte DHT location)
   const agentKeyBytes = decodeHashFromBase64(agentKey);
@@ -427,13 +429,22 @@ async function signatureError(
   agentKey: string,
   timestamp: unknown,
   signature: unknown,
+  message: (timestamp: string) => string,
 ): Promise<Response | null> {
   if (typeof timestamp !== 'string' || typeof signature !== 'string') {
     return errorJson('invalid_signature', 'timestamp and signature are required', 400);
   }
   const stale = timestampError(ctx, timestamp, signature);
   if (stale) return stale;
-  if (await signedByAgent(agentKey, timestamp, signature)) return null;
+  const ahead = Date.parse(timestamp) - Date.now();
+  if (ahead > MAX_SIGNED_AHEAD_MS) {
+    return errorJson(
+      'timestamp_out_of_range',
+      `Timestamp is ${Math.round(ahead / 1000)}s ahead of server time (max ${MAX_SIGNED_AHEAD_MS / 1000}s)`,
+      400,
+    );
+  }
+  if (await signedByAgent(agentKey, message(timestamp), signature)) return null;
   return errorJson(
     'invalid_signature',
     'Signature does not verify against agent key',
@@ -579,7 +590,8 @@ export function createApp(ctx: ServiceContext): Hono {
 
     const signed = body.timestamp !== undefined || body.signature !== undefined;
     if (signed) {
-      const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature);
+      const email = typeof claims?.email === 'string' ? claims.email : '';
+      const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => `join:${t}:${email}`);
       if (refused) return refused;
     } else if (didit && claims?.email && !body.delegated_verification) {
       return errorJson(
@@ -1190,7 +1202,7 @@ export function createApp(ctx: ServiceContext): Hono {
     }
     const scope = signedRequestScope(ctx, body);
     if (scope instanceof Response) return scope;
-    const refused = await signatureError(ctx, scope.agentKey, body.timestamp, body.signature);
+    const refused = await signatureError(ctx, scope.agentKey, body.timestamp, body.signature, (t) => `resume:${t}`);
     if (refused) return refused;
 
     const session = await ctx.sessionStore.findByAgentKey(scope.agentKey, scope.network);

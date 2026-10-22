@@ -18,8 +18,13 @@ import type {
   ErrorResponse,
 } from '../types.js';
 
-/** Signs an ISO 8601 timestamp string with the agent's ed25519 private key, returning the signature bytes. */
-export type SignTimestamp = (timestamp: string) => Promise<Uint8Array>;
+/**
+ * Signs the UTF-8 bytes of `message` with the agent's ed25519 private key,
+ * returning the signature bytes. The message is an ISO 8601 timestamp for
+ * `reconnect()`, `join:{timestamp}:{claims.email}` for `join()`, and
+ * `resume:{timestamp}` for `resume()`.
+ */
+export type SignTimestamp = (message: string) => Promise<Uint8Array>;
 
 // ---- Error class ----
 
@@ -218,8 +223,7 @@ export class JoiningClient {
    *   scope as an omitted `network`); pass `null` to explicitly suppress the
    *   discovered default and send no `network` at all; pass a string to
    *   override discovery with that network.
-   * @param signTimestamp - Signs the join as for `reconnect()`. Required by
-   *   `didit_with_email` services.
+   * @param signTimestamp - Signs the join. Required by `didit_with_email` services.
    * @returns A JoinSession — check `.status` to determine next steps
    */
   async join(
@@ -234,7 +238,7 @@ export class JoiningClient {
     }
     this.addNetwork(body, network);
     if (signTimestamp) {
-      Object.assign(body, await signedTimestamp(signTimestamp));
+      Object.assign(body, await signedTimestamp(signTimestamp, (t) => `join:${t}:${claims?.email ?? ''}`));
     }
 
     const res = await fetch(`${this.baseUrl}/join`, {
@@ -343,7 +347,10 @@ export class JoiningClient {
     signTimestamp: SignTimestamp,
     network?: string | null,
   ): Promise<JoinSession> {
-    const body: Record<string, unknown> = { agent_key: agentKey, ...(await signedTimestamp(signTimestamp)) };
+    const body: Record<string, unknown> = {
+      agent_key: agentKey,
+      ...(await signedTimestamp(signTimestamp, (t) => `resume:${t}`)),
+    };
     this.addNetwork(body, network);
 
     const res = await fetch(`${this.baseUrl}/join/resume`, {
@@ -383,9 +390,12 @@ export class JoiningClient {
 
 // ---- Helpers ----
 
-async function signedTimestamp(sign: SignTimestamp): Promise<{ timestamp: string; signature: string }> {
+async function signedTimestamp(
+  sign: SignTimestamp,
+  message = (timestamp: string) => timestamp,
+): Promise<{ timestamp: string; signature: string }> {
   const timestamp = new Date().toISOString();
-  return { timestamp, signature: uint8ArrayToBase64(await sign(timestamp)) };
+  return { timestamp, signature: uint8ArrayToBase64(await sign(message(timestamp))) };
 }
 
 async function throwJoiningError(res: Response): Promise<never> {

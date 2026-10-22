@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createTestApp, postJson, signingAgent } from './helpers.js';
+import { createTestApp, joinMessage, postJson, resumeMessage, signingAgent } from './helpers.js';
 import { HcAuthClient } from '../src/hc-auth/client.js';
 import type { SessionData } from '../src/session/store.js';
 
@@ -15,31 +15,30 @@ const EMAIL_CONFIG = {
 };
 
 describe('signed POST /v1/join', () => {
-  it('accepts a join signed by the agent key, and refuses a bad signature or a stale timestamp before it reads or changes any session', async () => {
+  it('accepts a join signed by the agent key, and refuses a bad signature or timestamp before it reads or changes any session', async () => {
     const { request, ctx } = await createTestApp(EMAIL_CONFIG);
     const agent = await signingAgent();
     const other = await signingAgent();
-    const first = await postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: 'a@b.com' }, ...(await agent.sign()) });
+    const join = (signed: object) => postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: 'a@b.com' }, ...signed });
+    const first = await join(await agent.sign(joinMessage('a@b.com')));
     expect(first.status).toBe(201);
     const { session } = await first.json();
     const before = await ctx.sessionStore.get(session);
     const lookups = vi.spyOn(ctx.sessionStore, 'findByAgentKey');
 
-    const forged = await postJson(request, '/v1/join', {
-      agent_key: agent.agentKey,
-      claims: { email: 'a@b.com' },
-      ...(await other.sign()),
-    });
-    expect(forged.status).toBe(400);
-    expect((await forged.json()).error.code).toBe('invalid_signature');
-
-    const stale = await postJson(request, '/v1/join', {
-      agent_key: agent.agentKey,
-      claims: { email: 'a@b.com' },
-      ...(await agent.sign(new Date(Date.now() - 600_000).toISOString())),
-    });
-    expect(stale.status).toBe(400);
-    expect((await stale.json()).error.code).toBe('timestamp_out_of_range');
+    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+    for (const [signed, code] of [
+      [await other.sign(joinMessage('a@b.com')), 'invalid_signature'],
+      [await agent.sign(), 'invalid_signature'],
+      [await agent.sign(joinMessage('A@b.com')), 'invalid_signature'],
+      [await agent.sign(resumeMessage), 'invalid_signature'],
+      [await agent.sign(joinMessage('a@b.com'), at(-600_000)), 'timestamp_out_of_range'],
+      [await agent.sign(joinMessage('a@b.com'), at(31_000)), 'timestamp_out_of_range'],
+    ] as const) {
+      const refused = await join(signed);
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).error.code).toBe(code);
+    }
 
     const half = await postJson(request, '/v1/join', { agent_key: agent.agentKey, timestamp: new Date().toISOString() });
     expect((await half.json()).error.code).toBe('invalid_signature');
@@ -61,11 +60,12 @@ describe('signed POST /v1/join', () => {
 
 describe('POST /v1/join/resume', () => {
   async function resume(request: Parameters<typeof postJson>[0], agent: Agent, extra: Record<string, unknown> = {}) {
-    return postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()), ...extra });
+    return postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), ...extra });
   }
 
   it.each<[string, string, (agent: Agent, other: Agent) => Promise<string>]>([
-    ['a signature by another key', 'invalid_signature', async (agent, other) => JSON.stringify({ agent_key: agent.agentKey, ...(await other.sign()) })],
+    ['a signature by another key', 'invalid_signature', async (agent, other) => JSON.stringify({ agent_key: agent.agentKey, ...(await other.sign(resumeMessage)) })],
+    ['a signature of the bare timestamp', 'invalid_signature', async (agent) => JSON.stringify({ agent_key: agent.agentKey, ...(await agent.sign()) })],
     ['no signature', 'invalid_signature', async (agent) => JSON.stringify({ agent_key: agent.agentKey })],
     ['a cut-off body', 'invalid_json', async () => '{"agent_key":'],
     ['a body that is not an object', 'invalid_json', async () => '42'],

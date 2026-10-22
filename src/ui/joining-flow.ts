@@ -60,10 +60,7 @@ export class JoiningFlow extends LitElement {
   @property({ attribute: false })
   signNonce?: (nonce: Uint8Array) => Promise<Uint8Array>;
 
-  /**
-   * Callback to sign the join, as for `JoiningClient.reconnect()`. Required
-   * by services that offer `didit_with_email`.
-   */
+  /** Signs the join, as `JoiningClient.join()` takes it. Required by services that offer `didit_with_email`. */
   @property({ attribute: false })
   signTimestamp?: SignTimestamp;
 

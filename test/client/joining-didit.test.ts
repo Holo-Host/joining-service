@@ -10,7 +10,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function signer(agent: Agent) {
-  return async (timestamp: string) => new Uint8Array(Buffer.from((await agent.sign(timestamp)).signature, 'base64'));
+  return async (message: string) => new Uint8Array(Buffer.from(await agent.signBytes(new TextEncoder().encode(message)), 'base64'));
 }
 
 beforeEach(() => {
@@ -73,6 +73,7 @@ describe('JoiningClient.resume', () => {
     const [url, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
     expect(url).toBe(`${SERVICE}/join/resume`);
     const body = JSON.parse(init.body as string);
-    expect(body).toEqual({ agent_key: 'uhCAkAgent', timestamp: sign.mock.calls[0][0], signature: 'AQID', network: 'net-1' });
+    expect(body).toEqual({ agent_key: 'uhCAkAgent', timestamp: body.timestamp, signature: 'AQID', network: 'net-1' });
+    expect(sign).toHaveBeenCalledWith(`resume:${body.timestamp}`);
   });
 });

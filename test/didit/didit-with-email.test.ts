@@ -14,9 +14,11 @@ import type { FakeDidit, FakeSession } from './fake-didit.js';
 import { BASE_URL, DIDIT_SERVICE, SUBJECT_KEY, WORKFLOW_ID } from './fixtures.js';
 import {
   diditApp,
+  joinMessage,
   linkToken,
   postJson,
   pressContinue,
+  resumeMessage,
   signedJoin,
   signingAgent,
   status,
@@ -209,7 +211,7 @@ describe('didit_with_email join', () => {
       'a signed partner join that fails at hc-auth',
       503,
       'service_unavailable',
-      async (request: Request, agent: Agent) => partnerJoin(request, agent.agentKey, await agent.sign()),
+      async (request: Request, agent: Agent) => partnerJoin(request, agent.agentKey, await agent.sign(joinMessage(EMAIL))),
     ],
   ])('keeps a pending link session and its link working when %s is refused', async (_name, code, error, refused) => {
     resetRateLimitState();
@@ -233,17 +235,17 @@ describe('didit_with_email join', () => {
   });
 
   it.each([
-    ['with padding', async (agent: Agent) => ({ agent_key: `${agent.agentKey}=`, ...(await agent.sign()) })],
+    ['with padding', async (agent: Agent) => ({ agent_key: `${agent.agentKey}=`, ...(await agent.sign(joinMessage(EMAIL))) })],
     [
       'with a changed DHT location',
       async (agent: Agent) => {
         const bytes = decodeHashFromBase64(agent.agentKey);
         bytes[38] ^= 1;
-        return { agent_key: encodeHashToBase64(bytes), ...(await agent.sign()) };
+        return { agent_key: encodeHashToBase64(bytes), ...(await agent.sign(joinMessage(EMAIL))) };
       },
     ],
     [
-      'of small order, for which one fixed signature verifies any timestamp',
+      'of small order, for which one fixed signature verifies any message',
       async () => {
         const identity = new Uint8Array(32);
         identity[0] = 1;
@@ -288,7 +290,7 @@ describe('didit_with_email join', () => {
     expect(await old.text()).toContain('This link is no longer valid, or this join is finished. Open the app to continue.');
     expect((await request(`/v1/didit/${second.token}`)).status).toBe(200);
 
-    const resumed = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()) });
+    const resumed = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
     expect((await resumed.json()).session).toBe(second.session);
   });
 
@@ -824,7 +826,7 @@ describe('the ready path of a didit_with_email join', () => {
     expect(emails[0].subject).toBe('Verify your identity to join Acme');
     expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('Someone started joining Acme');
     const resume = async (extra: Record<string, unknown>) =>
-      postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()), ...extra });
+      postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), ...extra });
     expect((await (await resume({ network: 'acme-net' })).json()).session).toBe(session);
     expect((await resume({})).status).toBe(404);
   });
@@ -838,7 +840,7 @@ describe('POST /v1/join/resume for a didit_with_email join', () => {
     didit.sessions[0].status = 'In Review';
     later();
 
-    const res = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()) });
+    const res = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.session).toBe(session);
@@ -940,7 +942,7 @@ describe('didit_with_email leaks nothing', () => {
     didit.sessions[0].status = 'In Review';
     later();
     await keep(await request(donePath(didit)));
-    await keep(await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()) }));
+    await keep(await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) }));
     await keep(await postJson(request, `/v1/join/${session}/resend`, { challenge_id: 'none' }));
     didit.sessions[0].metadata = { agent_key: 'uhCAkOther' };
     later();
