@@ -85,7 +85,7 @@ const factories: Array<[string, Factory]> = [
   [
     'cloudflare-kv',
     () => {
-      const kv = createMockKV();
+      const kv = createMockKV({ latencyMs: 5 });
       return { store: new KvSessionStore(kv, TTL_SECONDS), second: () => new KvSessionStore(kv, TTL_SECONDS), close: () => {} };
     },
   ],
@@ -236,8 +236,8 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
       const { seen, record } = recorder(store);
       await record(['address:a', 'agent:k'], NOW);
       await record(['address:a', 'agent:k'], NOW);
-      await store.removeEvents(['address:a', 'agent:k'], NOW, DAY);
-      await store.removeEvents(['address:a', 'agent:k'], NOW, DAY);
+      await store.removeEvents(['address:a', 'agent:k'], NOW);
+      await store.removeEvents(['address:a', 'agent:k'], NOW);
       await record(['address:a', 'agent:k'], NOW + 1);
       expect(seen.at(-1)).toEqual([[], []]);
     });
@@ -252,7 +252,7 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
   });
 });
 
-describe.each(factories.filter(([name]) => name !== 'cloudflare-kv'))('%s store, concurrent writes', (_name, factory) => {
+describe.each(factories)('%s store, concurrent writes', (name, factory) => {
   let built: ReturnType<Factory>;
 
   beforeEach(() => {
@@ -267,16 +267,19 @@ describe.each(factories.filter(([name]) => name !== 'cloudflare-kv'))('%s store,
     vi.useRealTimers();
   });
 
-  it('lets one of two reservations made at once through a limit of one', async () => {
+  it('lets at most one of 30 reservations made at once through a limit of one, and keeps the one it records', async () => {
     const onlyFirst = (earlier: number[][]) => (earlier[0].length > 0 ? 1000 : 0);
-    const waits = await Promise.all([
-      built.store.reserveEvents(['address:a'], NOW, DAY, onlyFirst),
-      built.store.reserveEvents(['address:a'], NOW, DAY, onlyFirst),
-    ]);
-    expect(waits).toEqual([0, 1000]);
+    const waits = await Promise.all(Array.from({ length: 30 }, () => built.store.reserveEvents(['address:a'], NOW, DAY, onlyFirst)));
+    const passed = waits.filter((wait) => wait === 0).length;
+    // KV records before it counts, so reservations that see each other can all refuse.
+    if (name === 'cloudflare-kv') expect(passed).toBeLessThanOrEqual(1);
+    else expect(passed).toBe(1);
+    const { seen, record } = recorder(built.store);
+    await record(['address:a'], NOW + 1);
+    expect(seen[0][0]).toHaveLength(passed);
   });
 
-  it('merges two updates made at once', async () => {
+  it.skipIf(name === 'cloudflare-kv')('merges two updates made at once', async () => {
     await built.store.create(session());
     const adding = (hash: string) => linkChallenge({}, { token_hashes: ['hash_1', hash] });
     await Promise.all([

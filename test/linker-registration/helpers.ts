@@ -8,18 +8,26 @@ interface MockKvEntry {
   expiration?: number;
 }
 
-export function createMockKV(): KVNamespace & { store: Map<string, MockKvEntry> } {
+/** A KV namespace in memory. With `latencyMs`, each call first waits up to that long, so concurrent calls interleave. */
+export function createMockKV({ latencyMs = 0 } = {}): KVNamespace & { store: Map<string, MockKvEntry> } {
   const store = new Map<string, MockKvEntry>();
+  const lag = () => (latencyMs ? new Promise((resolve) => setTimeout(resolve, Math.random() * latencyMs)) : undefined);
   return {
     store,
-    get: vi.fn(async (key: string) => store.get(key)?.value ?? null),
+    get: vi.fn(async (key: string) => {
+      await lag();
+      return store.get(key)?.value ?? null;
+    }),
     put: vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number; expiration?: number }) => {
+      await lag();
       store.set(key, { value, expirationTtl: opts?.expirationTtl, expiration: opts?.expiration });
     }),
     delete: vi.fn(async (key: string) => {
+      await lag();
       store.delete(key);
     }),
     list: vi.fn(async (options: { prefix: string }) => {
+      await lag();
       const keys: Array<{ name: string }> = [];
       for (const name of store.keys()) {
         if (name.startsWith(options.prefix)) keys.push({ name });

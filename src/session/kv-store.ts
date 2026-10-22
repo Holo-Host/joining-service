@@ -2,8 +2,9 @@
  * SessionStore backed by Cloudflare Workers KV.
  *
  * Each session is stored as a JSON value keyed by session ID. Index keys
- * map agent_key and each emailed link token to a session ID, and event keys
- * hold the email limits' event times.
+ * map agent_key and each emailed link token to a session ID. Each event of
+ * the email limits is a key of its own, so concurrent writers add keys
+ * rather than overwrite one value.
  *
  * TTL is handled by KV's built-in expiration. A session holding a link
  * challenge expires at an absolute time (`expiration`), so writes never move
@@ -11,7 +12,7 @@
  */
 
 import type { LinkSessionStore, SessionData } from './store.js';
-import { applyUpdate, holdsLink, isExpired, linkTokenHashes, ownsLinkToken, pendingExpiresAt, withoutOne } from './store.js';
+import { applyUpdate, holdsLink, isExpired, linkTokenHashes, ownsLinkToken, pendingExpiresAt } from './store.js';
 
 /** Cloudflare KV namespace binding (subset of the runtime type). */
 interface KVNamespace {
@@ -41,6 +42,10 @@ function expirationAt(ms: number): number {
 /** Composite agent-index key: session uniqueness is per (agent, network). */
 function agentIndexKey(agentKey: string, network?: string): string {
   return `${AGENT_INDEX_PREFIX}${agentKey}\0${network ?? ''}`;
+}
+
+function eventPrefix(key: string): string {
+  return `${EVENT_PREFIX}${key}\0`;
 }
 
 /** Prefix under which all of an agent's (agent, network) index entries live. */
@@ -163,28 +168,34 @@ export class KvSessionStore implements LinkSessionStore {
     return ownsLinkToken(session, tokenHash) ? session : null;
   }
 
+  /** Records before it counts: counting first would miss a reservation made at the same moment. */
   async reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number> {
+    const mine = keys.map((key) => `${eventPrefix(key)}${at}\0${crypto.randomUUID()}`);
+    for (const name of mine) await this.kv.put(name, '', { expiration: expirationAt(at + ttlMs) });
     const earlier: number[][] = [];
-    for (const key of keys) earlier.push((await this.readEvents(key)).filter((t) => t > at - ttlMs));
+    for (const [i, key] of keys.entries()) earlier.push(await this.eventTimes(key, at - ttlMs, mine[i]));
     const delay = wait(earlier);
-    if (delay > 0) return delay;
-    for (const [i, key] of keys.entries()) await this.writeEvents(key, [...earlier[i], at], at + ttlMs);
-    return 0;
+    if (delay <= 0) return 0;
+    for (const name of mine) await this.kv.delete(name);
+    return delay;
   }
 
-  async removeEvents(keys: string[], at: number, ttlMs: number): Promise<void> {
+  async removeEvents(keys: string[], at: number): Promise<void> {
     for (const key of keys) {
-      await this.writeEvents(key, withoutOne(await this.readEvents(key), at), at + ttlMs);
+      const { keys: found } = await this.kv.list({ prefix: `${eventPrefix(key)}${at}\0` });
+      if (found.length > 0) await this.kv.delete(found[0].name);
     }
   }
 
-  private async readEvents(key: string): Promise<number[]> {
-    const raw = await this.kv.get(EVENT_PREFIX + key);
-    return raw ? (JSON.parse(raw) as number[]) : [];
-  }
-
-  private async writeEvents(key: string, times: number[], expiresAt: number): Promise<void> {
-    await this.kv.put(EVENT_PREFIX + key, JSON.stringify(times), { expiration: expirationAt(expiresAt) });
+  /** The times after `after` of every event of `key` but the one named `except`, oldest first. */
+  private async eventTimes(key: string, after: number, except: string): Promise<number[]> {
+    const prefix = eventPrefix(key);
+    const { keys } = await this.kv.list({ prefix });
+    return keys
+      .filter((k) => k.name !== except)
+      .map((k) => Number(k.name.slice(prefix.length).split('\0')[0]))
+      .filter((t) => t > after)
+      .sort((a, b) => a - b);
   }
 
   private async indexLinkTokens(session: SessionData, hashes: string[], opts: KvPutOptions): Promise<void> {

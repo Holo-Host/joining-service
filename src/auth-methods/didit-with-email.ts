@@ -463,7 +463,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
         fill(this.config.email_template ?? DEFAULT_TEMPLATE, values),
       );
     } catch (err) {
-      await storeStep('release an email', () => this.store.removeEvents(keys, now, DAY_MS)).catch(() => {});
+      await storeStep('release an email', () => this.store.removeEvents(keys, now)).catch(() => {});
       console.error(`[didit_with_email] email send failed: ${errorHead(err)}`);
       throw new JoinRequestError(503, 'service_unavailable', 'The email could not be sent. Try again in a few minutes.');
     }

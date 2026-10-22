@@ -81,13 +81,12 @@ export interface LinkSessionStore extends SessionStore {
    * Gives `wait` each key's events within `ttlMs`, oldest first, and records
    * an event at `at` under every key unless `wait` returns a positive delay.
    * Returns that delay, or 0 once recorded. Events must be visible to every
-   * service instance. The read and the record are one step on the memory and
-   * sqlite stores; KV, with no compare-and-swap, can miss an event recorded
-   * at the same moment elsewhere.
+   * service instance. KV lists a new key up to 60 seconds late, so there
+   * reservations closer together than that can miss each other and each pass.
    */
   reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number>;
   /** Removes one event recorded at `at` from every key. */
-  removeEvents(keys: string[], at: number, ttlMs: number): Promise<void>;
+  removeEvents(keys: string[], at: number): Promise<void>;
 }
 
 export function isLinkSessionStore(store: SessionStore): store is LinkSessionStore {
