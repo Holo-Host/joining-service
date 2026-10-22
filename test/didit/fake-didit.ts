@@ -2,17 +2,14 @@ import { vi } from 'vitest';
 import { WORKFLOW_ID } from './fixtures.js';
 
 const OPEN = new Set(['Not Started', 'In Progress', 'Resubmitted', 'Awaiting User']);
-const WORKFLOW_VERSION = 3;
 
 export interface FakeSession {
   session_id: string;
   status: string;
   vendor_data: string;
   workflow_id: string;
-  workflow_version: number;
   environment: string;
   metadata: { agent_key?: string } | null;
-  callback?: string;
   url: string;
   session_token: string;
   created: number;
@@ -56,7 +53,6 @@ export class FakeDidit {
       session_id: `ds-${id}`,
       status: 'Not Started',
       workflow_id: WORKFLOW_ID,
-      workflow_version: WORKFLOW_VERSION,
       environment: 'sandbox',
       metadata: null,
       url: `https://verify.didit.me/session/SESSION-URL-${id}`,
@@ -92,38 +88,19 @@ export class FakeDidit {
 
   private create(body: Record<string, unknown>): Response {
     let session = this.sessions.find(
-      (s) =>
-        s.vendor_data === body.vendor_data &&
-        s.workflow_id === body.workflow_id &&
-        s.workflow_version === WORKFLOW_VERSION &&
-        OPEN.has(s.status),
+      (s) => s.vendor_data === body.vendor_data && s.workflow_id === body.workflow_id && OPEN.has(s.status),
     );
     if (session) {
       session.metadata = body.metadata as FakeSession['metadata'];
-      session.callback = body.callback as string;
     } else {
       session = this.seed({
         vendor_data: body.vendor_data as string,
         workflow_id: body.workflow_id as string,
         metadata: body.metadata as FakeSession['metadata'],
-        callback: body.callback as string,
       });
     }
-    return json(
-      {
-        session_id: session.session_id,
-        session_number: session.created,
-        session_token: session.session_token,
-        url: session.url,
-        vendor_data: session.vendor_data,
-        metadata: session.metadata,
-        status: session.status,
-        workflow_id: session.workflow_id,
-        workflow_version: session.workflow_version,
-        callback: session.callback,
-      },
-      201,
-    );
+    const { session_id, session_token, url, status } = session;
+    return json({ session_id, session_token, url, status }, 201);
   }
 
   private decision(id: string): Response {
@@ -133,7 +110,6 @@ export class FakeDidit {
       session_id: s.session_id,
       status: s.status,
       workflow_id: s.workflow_id,
-      workflow_version: s.workflow_version,
       vendor_data: s.vendor_data,
       environment: s.environment,
       metadata: s.metadata,
@@ -148,15 +124,7 @@ export class FakeDidit {
       .sort((a, b) => b.created - a.created);
     return json({
       count: rows.length,
-      next: null,
-      previous: null,
-      results: rows.map((s) => ({
-        session_id: s.session_id,
-        status: s.status,
-        vendor_data: s.vendor_data,
-        full_name: 'Ada Lovelace',
-        email_address: 'ada@example.com',
-      })),
+      results: rows.map((s) => ({ session_id: s.session_id, status: s.status, full_name: 'Ada Lovelace' })),
     });
   }
 }

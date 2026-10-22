@@ -6,8 +6,10 @@ import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { createTestApp, fakeDnaHash } from '../helpers.js';
 import { agentPubKeyFrom32, decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
+import type { ServiceConfig } from '../../src/config.js';
 import type { UrlProvider } from '../../src/urls/provider.js';
 import type { LinkSessionStore } from '../../src/session/store.js';
+import type { FakeDidit, FakeSession } from './fake-didit.js';
 import { BASE_URL, DIDIT_SERVICE, SUBJECT_KEY, WORKFLOW_ID } from './fixtures.js';
 import {
   diditApp,
@@ -19,11 +21,14 @@ import {
   status,
   type Agent,
   type Request,
+  type SentEmail,
 } from './harness.js';
 
 const EMAIL = 'Ada@Example.com';
 const SUBJECT = subjectId(EMAIL, SUBJECT_KEY);
 const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true, forward_claims: ['email'] };
+const OTHER_WORKFLOW = '99999999-2222-4333-8444-555555555555';
+const VERIFIED = 'Your identity is verified. Go back to the app. It finishes joining by itself.';
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -33,12 +38,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Joins, returning the session token, the link token and the join response. */
-async function joined(request: Request, emails: { body: string }[], agent: Agent, email = EMAIL) {
+async function joined(request: Request, emails: SentEmail[], agent: Agent, email = EMAIL) {
   const res = await signedJoin(request, agent, email);
   expect(res.status).toBe(201);
   const body = await res.json();
-  return { session: body.session as string, token: linkToken(emails[emails.length - 1] as never), join: body };
+  return { session: body.session as string, token: linkToken(emails[emails.length - 1]), join: body };
+}
+
+async function joinedApp(overrides: Partial<ServiceConfig> = {}, hcAuthClient?: HcAuthClient) {
+  const app = await diditApp(overrides, hcAuthClient);
+  const agent = await signingAgent();
+  return { ...app, agent, ...(await joined(app.request, app.emails, agent)) };
+}
+
+function captureLogs(levels: ('log' | 'warn' | 'error' | 'info' | 'debug')[] = ['warn', 'error']): string[] {
+  const lines: string[] = [];
+  for (const level of levels) {
+    vi.spyOn(console, level).mockImplementation((...args) => {
+      lines.push(...args.map(String));
+    });
+  }
+  return lines;
 }
 
 function shortKey(agentKey: string) {
@@ -83,10 +103,10 @@ function later(ms = 301_000) {
 }
 
 describe('didit_with_email join', () => {
-  it('emails one link under base_url, naming the network, the short agent key and the expiry, and calls no Didit', async () => {
+  it('emails one link under base_url to the trimmed address, naming the network, the short agent key and the expiry, and calls no Didit', async () => {
     const { request, emails, didit } = await diditApp();
     const agent = await signingAgent();
-    const { join } = await joined(request, emails, agent);
+    const { join } = await joined(request, emails, agent, `  ${EMAIL}\t`);
 
     expect(emails).toHaveLength(1);
     const [email] = emails;
@@ -124,11 +144,9 @@ describe('didit_with_email join', () => {
   });
 
   it('shows the client exactly id, type, description, expiry, group and {state, resend_available_at}', async () => {
-    const { request, emails } = await diditApp({
+    const { request, session, join } = await joinedApp({
       auth_methods: [{ any_of: ['agent_allow_list', 'didit_with_email'] }],
     });
-    const agent = await signingAgent();
-    const { session, join } = await joined(request, emails, agent);
 
     const challenge = join.challenges.find((c: { type: string }) => c.type === 'didit_with_email');
     expect(Object.keys(challenge).sort()).toEqual(['description', 'expires_at', 'group', 'id', 'metadata', 'type']);
@@ -146,7 +164,7 @@ describe('didit_with_email join', () => {
     '"Ada" <ada@example.com>',
     'ada',
     'ada@example.com/../../notes',
-    'ada@\uff45xample.com',
+    'ada@ｅxample.com',
     ['ada@example.com'],
   ])('refuses %j as the email, and sends nothing', async (email) => {
     const { request, emails } = await diditApp();
@@ -156,22 +174,18 @@ describe('didit_with_email join', () => {
     expect(emails).toHaveLength(0);
   });
 
-  it('refuses an unsigned join with an email before it sends anything', async () => {
-    const { request, emails } = await diditApp();
-    const agent = await signingAgent();
-    const res = await postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: EMAIL } });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('signature_required');
-    expect(emails).toHaveLength(0);
-  });
-
-  it('keeps unsigned joins without an email, and partner-verified joins, as they were', async () => {
+  it('refuses an unsigned join with an email, and keeps unsigned joins without one and partner-verified joins as they were', async () => {
     resetRateLimitState();
-    const { request, ctx } = await diditApp({
+    const { request, ctx, emails } = await diditApp({
       auth_methods: [{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }],
       delegated_verification: PARTNER,
     });
     const listed = await signingAgent();
+    const unsigned = await postJson(request, '/v1/join', { agent_key: listed.agentKey, claims: { email: EMAIL } });
+    expect(unsigned.status).toBe(400);
+    expect((await unsigned.json()).error.code).toBe('signature_required');
+    expect(emails).toHaveLength(0);
+
     await ctx.allowedAgentStore!.put({ agent_key: listed.agentKey, registered_at: new Date().toISOString() });
     const allowListJoin = await postJson(request, '/v1/join', { agent_key: listed.agentKey });
     expect(allowListJoin.status).toBe(201);
@@ -182,56 +196,64 @@ describe('didit_with_email join', () => {
     expect((await partnered.json()).status).toBe('ready');
   });
 
-  it('keeps a pending link session when a signed join that would replace it fails at hc-auth', async () => {
+  it.each([
+    ['an unsigned join', 409, 'join_in_progress', (request: Request, agent: Agent) => postJson(request, '/v1/join', { agent_key: agent.agentKey })],
+    ['a signed join inside the email interval', 429, 'rate_limited', (request: Request, agent: Agent) => signedJoin(request, agent, EMAIL)],
+    [
+      'a signed partner join that fails at hc-auth',
+      503,
+      'service_unavailable',
+      async (request: Request, agent: Agent) => partnerJoin(request, agent.agentKey, await agent.sign()),
+    ],
+  ])('keeps a pending link session and its link working when %s is refused', async (_name, code, error, refused) => {
     resetRateLimitState();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { request, ctx, emails } = await diditApp(
-      { hc_auth: HC, auth_methods: [{ any_of: ['delegated_verification', 'didit_with_email'] }], delegated_verification: PARTNER },
+    captureLogs();
+    vi.spyOn(HcAuthClient.prototype, 'registerAndAuthorize').mockRejectedValue(new Error('hc-auth down'));
+    const { request, ctx, agent, session, token } = await joinedApp(
+      {
+        hc_auth: HC,
+        auth_methods: [{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }],
+        delegated_verification: PARTNER,
+      },
       new HcAuthClient(HC),
     );
-    vi.spyOn(HcAuthClient.prototype, 'registerAndAuthorize').mockRejectedValue(new Error('hc-auth down'));
-    const agent = await signingAgent();
-    const first = await joined(request, emails, agent);
-    const before = await ctx.sessionStore.get(first.session);
+    const before = await ctx.sessionStore.get(session);
 
-    expect((await partnerJoin(request, agent.agentKey, await agent.sign())).status).toBe(503);
-    expect(await ctx.sessionStore.get(first.session)).toEqual(before);
-    expect((await request(`/v1/didit/${first.token}`)).status).toBe(200);
+    const res = await refused(request, agent);
+    expect(res.status).toBe(code);
+    expect((await res.json()).error.code).toBe(error);
+    expect(await ctx.sessionStore.get(session)).toEqual(before);
+    expect((await request(`/v1/didit/${token}`)).status).toBe(200);
   });
 
-  it('refuses an agent key in any form but its canonical one, and sends nothing', async () => {
+  it.each([
+    ['with padding', async (agent: Agent) => ({ agent_key: `${agent.agentKey}=`, ...(await agent.sign()) })],
+    [
+      'with a changed DHT location',
+      async (agent: Agent) => {
+        const bytes = decodeHashFromBase64(agent.agentKey);
+        bytes[38] ^= 1;
+        return { agent_key: encodeHashToBase64(bytes), ...(await agent.sign()) };
+      },
+    ],
+    [
+      'of small order, for which one fixed signature verifies any timestamp',
+      async () => {
+        const identity = new Uint8Array(32);
+        identity[0] = 1;
+        return {
+          agent_key: encodeHashToBase64(agentPubKeyFrom32(identity)),
+          timestamp: new Date().toISOString(),
+          signature: Buffer.from([1, ...new Array(63).fill(0)]).toString('base64'),
+        };
+      },
+    ],
+  ])('refuses an agent key %s, and sends nothing', async (_name, body) => {
     const { request, emails } = await diditApp();
-    const agent = await signingAgent();
-    const bytes = decodeHashFromBase64(agent.agentKey);
-    bytes[38] ^= 1;
-    for (const agentKey of [`${agent.agentKey}=`, encodeHashToBase64(bytes)]) {
-      const res = await postJson(request, '/v1/join', { agent_key: agentKey, claims: { email: EMAIL }, ...(await agent.sign()) });
-      expect(res.status).toBe(400);
-      expect((await res.json()).error.code).toBe('invalid_agent_key');
-    }
-    expect(emails).toHaveLength(0);
-  });
-
-  it('refuses a small-order agent key, for which one fixed signature verifies any timestamp', async () => {
-    const { request, emails } = await diditApp();
-    const identity = new Uint8Array(32);
-    identity[0] = 1;
-    const signature = Buffer.from([1, ...new Array(63).fill(0)]).toString('base64');
-    const res = await postJson(request, '/v1/join', {
-      agent_key: encodeHashToBase64(agentPubKeyFrom32(identity)),
-      claims: { email: EMAIL },
-      timestamp: new Date().toISOString(),
-      signature,
-    });
+    const res = await postJson(request, '/v1/join', { claims: { email: EMAIL }, ...(await body(await signingAgent())) });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('invalid_agent_key');
     expect(emails).toHaveLength(0);
-  });
-
-  it('emails the address without the spaces around it', async () => {
-    const { request, emails } = await diditApp();
-    await joined(request, emails, await signingAgent(), `  ${EMAIL}\t`);
-    expect(emails[0].to).toBe(EMAIL);
   });
 
   it('answers a verify that leaves the link open with the link poll interval', async () => {
@@ -247,80 +269,50 @@ describe('didit_with_email join', () => {
     expect(await res.json()).toMatchObject({ status: 'pending', poll_interval_ms: 5000 });
   });
 
-  it('answers 409 join_in_progress to an unsigned join over a pending link session, and changes nothing', async () => {
-    const { request, ctx, emails } = await diditApp({
-      auth_methods: [{ any_of: ['agent_allow_list', 'didit_with_email'] }],
-    });
-    const agent = await signingAgent();
-    const { session } = await joined(request, emails, agent);
-    const before = await ctx.sessionStore.get(session);
-
-    const res = await postJson(request, '/v1/join', { agent_key: agent.agentKey });
-    expect(res.status).toBe(409);
-    expect((await res.json()).error.code).toBe('join_in_progress');
-    expect(await ctx.sessionStore.get(session)).toEqual(before);
-  });
-
   it('replaces a pending link session on a signed join, and its old link stops working', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, ctx, emails } = await diditApp();
-    const agent = await signingAgent();
-    const first = await joined(request, emails, agent);
+    const { request, ctx, emails, agent, ...first } = await joinedApp();
     later(61_000);
     const second = await joined(request, emails, agent);
 
     expect(second.session).not.toBe(first.session);
     expect(await ctx.sessionStore.get(first.session)).toBeNull();
-    expect((await request(`/v1/didit/${first.token}`)).status).toBe(404);
+    const old = await request(`/v1/didit/${first.token}`);
+    expect(old.status).toBe(404);
+    expect(await old.text()).toContain('This link is no longer valid, or this join is finished. Open the app to continue.');
     expect((await request(`/v1/didit/${second.token}`)).status).toBe(200);
 
     const resumed = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()) });
     expect((await resumed.json()).session).toBe(second.session);
   });
 
-  it('leaves a pending link session and its link working when a signed join fails', async () => {
+  it.each([
+    [
+      'the email cannot be sent, logging no address',
+      `Postmark API error (422): {"Message":"Invalid 'To' address: ${EMAIL}"}`,
+      'Postmark API error (422)',
+      () => vi.spyOn(FileTransport.prototype, 'send'),
+    ],
+    ['the store cannot record the email', 'KV write limit', 'KV write limit', (store: LinkSessionStore) => vi.spyOn(store, 'reserveEvents')],
+  ])('answers 503 and keeps no session when %s, and lets the join retry at once', async (_name, message, logged, fail) => {
     const { request, ctx, emails } = await diditApp();
-    const agent = await signingAgent();
-    const first = await joined(request, emails, agent);
-    const before = await ctx.sessionStore.get(first.session);
-
-    const refused = await signedJoin(request, agent, EMAIL);
-    expect(refused.status).toBe(429);
-    expect(await ctx.sessionStore.get(first.session)).toEqual(before);
-    expect((await request(`/v1/didit/${first.token}`)).status).toBe(200);
-  });
-
-  it('answers 503 and keeps no session when the email cannot be sent, logging no address, and lets the join retry at once', async () => {
-    const { request, ctx, emails } = await diditApp();
-    vi.spyOn(FileTransport.prototype, 'send').mockRejectedValueOnce(
-      new Error(`Postmark API error (422): {"Message":"Invalid 'To' address: ${EMAIL}"}`),
-    );
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fail(ctx.sessionStore as LinkSessionStore).mockRejectedValueOnce(new Error(message));
+    const lines = captureLogs();
     const agent = await signingAgent();
     const res = await signedJoin(request, agent, EMAIL);
     expect(res.status).toBe(503);
     expect((await res.json()).error.code).toBe('service_unavailable');
     expect(await ctx.sessionStore.findByAgentKey(agent.agentKey)).toBeNull();
     expect(emails).toHaveLength(0);
-    expect(errors.mock.calls.flat().join(' ')).toContain('Postmark API error (422)');
-    expect(errors.mock.calls.flat().join(' ')).not.toContain(EMAIL);
+    expect(lines.join('\n')).toContain(logged);
+    expect(lines.join('\n')).not.toContain(EMAIL);
 
     expect((await signedJoin(request, agent, EMAIL)).status).toBe(201);
   });
 
-  it('answers 503 when the store cannot record the email, and sends nothing', async () => {
-    const { request, ctx, emails } = await diditApp();
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(ctx.sessionStore as LinkSessionStore, 'reserveEvents').mockRejectedValueOnce(new Error('KV write limit'));
-    const res = await signedJoin(request, await signingAgent());
-    expect(res.status).toBe(503);
-    expect((await res.json()).error.code).toBe('service_unavailable');
-    expect(emails).toHaveLength(0);
-  });
-
   it('answers a bad email, an email limit or a mail failure inside an any_of group, unless another method admits the agent', async () => {
     const { request, ctx } = await diditApp({ auth_methods: [{ any_of: ['agent_allow_list', 'didit_with_email'] }] });
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureLogs();
     const bad = await signedJoin(request, await signingAgent(), 'ada');
     expect(bad.status).toBe(400);
     expect((await bad.json()).error.code).toBe('missing_claims');
@@ -343,8 +335,7 @@ describe('didit_with_email join', () => {
   });
 
   it('answers verify with 422 and counts it toward the attempt limit', async () => {
-    const { request, emails } = await diditApp();
-    const { session, join } = await joined(request, emails, await signingAgent());
+    const { request, session, join } = await joinedApp();
     const verify = () =>
       postJson(request, `/v1/join/${session}/verify`, { challenge_id: join.challenges[0].id, response: '123456' });
 
@@ -357,12 +348,14 @@ describe('didit_with_email join', () => {
 });
 
 describe('didit_with_email email limits', () => {
-  it('refuses the sixth email to one address in 24 hours with Retry-After', async () => {
+  it('refuses the sixth email to one address in 24 hours with Retry-After, counting no refused email', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const { request, emails } = await diditApp();
     for (let i = 0; i < 5; i++) {
       expect((await signedJoin(request, await signingAgent(), EMAIL)).status).toBe(201);
-      later(61_000);
+      later(30_000);
+      expect((await signedJoin(request, await signingAgent(), EMAIL)).status).toBe(429);
+      later(31_000);
     }
     const res = await signedJoin(request, await signingAgent(), ' ada@EXAMPLE.com ');
     expect(res.status).toBe(429);
@@ -371,17 +364,6 @@ describe('didit_with_email email limits', () => {
     expect(retry).toBeGreaterThan(86_400 - 6 * 61);
     expect(retry).toBeLessThanOrEqual(86_400);
     expect(emails).toHaveLength(5);
-  });
-
-  it('counts no refused email against the limits', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, emails } = await diditApp();
-    expect((await signedJoin(request, await signingAgent(), EMAIL)).status).toBe(201);
-    later(30_000);
-    expect((await signedJoin(request, await signingAgent(), EMAIL)).status).toBe(429);
-    later(31_000);
-    expect((await signedJoin(request, await signingAgent(), EMAIL)).status).toBe(201);
-    expect(emails).toHaveLength(2);
   });
 
   it('answers an agent key over its limit with its own wait, saying nothing about the address', async () => {
@@ -397,14 +379,11 @@ describe('didit_with_email email limits', () => {
     expect(res.status).toBe(429);
     expect(Number(res.headers.get('Retry-After'))).toBeLessThanOrEqual(9);
   });
-
 });
 
 describe('GET /v1/didit/{token}', () => {
   it('shows the request, the short key and Continue, and changes and calls nothing', async () => {
-    const { request, ctx, emails, didit } = await diditApp();
-    const agent = await signingAgent();
-    const { session, token } = await joined(request, emails, agent);
+    const { request, ctx, didit, agent, session, token } = await joinedApp();
     const before = await ctx.sessionStore.get(session);
 
     const res = await request(`/v1/didit/${token}`);
@@ -427,9 +406,8 @@ describe('GET /v1/didit/{token}', () => {
   });
 
   it('answers a page, not JSON, when the store fails', async () => {
-    const { request, ctx, emails } = await diditApp();
-    const { token } = await joined(request, emails, await signingAgent());
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request, ctx, token } = await joinedApp();
+    captureLogs();
     vi.spyOn(ctx.sessionStore as LinkSessionStore, 'findByLinkToken').mockRejectedValue(new Error('KV down'));
     for (const res of [await request(`/v1/didit/${token}`), await pressContinue(request, token), await request(`/v1/didit/${token}/done`)]) {
       expect(res.status).toBe(503);
@@ -437,20 +415,11 @@ describe('GET /v1/didit/{token}', () => {
       expect(await res.text()).toContain('Identity verification is not available right now.');
     }
   });
-
-  it('answers one page for a token it does not know', async () => {
-    const { request } = await diditApp();
-    const res = await request(`/v1/didit/${'A'.repeat(43)}`);
-    expect(res.status).toBe(404);
-    expect(await res.text()).toContain('This link is no longer valid, or this join is finished. Open the app to continue.');
-  });
 });
 
 describe('POST /v1/didit/{token}', () => {
   it('creates a session for the subject id and agent key, with the done callback, and answers 303 to it', async () => {
-    const { request, ctx, emails, didit } = await diditApp();
-    const agent = await signingAgent();
-    const { session, token } = await joined(request, emails, agent);
+    const { request, ctx, didit, agent, session, token } = await joinedApp();
 
     const res = await pressContinue(request, token);
     expect(res.status).toBe(303);
@@ -471,142 +440,75 @@ describe('POST /v1/didit/{token}', () => {
     expect((await status(request, session)).challenges[0].metadata.state).toBe('in_progress');
   });
 
-  it('reuses an open session without the cap, whichever key opened it', async () => {
-    const { request, emails, didit } = await diditApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_email: 1 } });
-    const open = didit.seed({ vendor_data: SUBJECT, status: 'In Progress', metadata: { agent_key: 'uhCAkOther' } });
-    const agent = await signingAgent();
-    const { token } = await joined(request, emails, agent);
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(303);
-    expect(res.headers.get('Location')).toBe(open.url);
-    expect(didit.sessions).toHaveLength(1);
-    expect(open.metadata).toEqual({ agent_key: agent.agentKey });
-  });
-
-  it("completes from this key's earlier approval with no new session", async () => {
+  const capText = 'This email address has no identity verification attempts left. Contact support.';
+  type Seed = [status: string, by?: 'own' | 'other', extra?: Partial<FakeSession>];
+  type Outcome = { seeds: Seed[]; max?: number; code: number; creates?: number; polled: { status: string; [field: string]: unknown }; says?: string; logged?: string };
+  it.each<[string, Outcome]>([
+    ["this key's approval", { seeds: [['Approved', 'own']], code: 200, polled: { status: 'ready' }, says: VERIFIED }],
+    ["another key's approval", { seeds: [['Approved', 'other']], code: 303, creates: 1, polled: { status: 'pending' } }],
+    [
+      "this key's session in review",
+      {
+        seeds: [['In Review', 'own']],
+        code: 200,
+        polled: { status: 'pending', challenges: [{ metadata: { state: 'in_review' } }] },
+        says: 'Your verification is in review. After the review, the app continues by itself.',
+      },
+    ],
+    [
+      "this key's older approval before another key's newer open session",
+      { seeds: [['Approved', 'own'], ['In Progress', 'other']], code: 200, polled: { status: 'ready' }, says: VERIFIED },
+    ],
+    [
+      'a listed session of another environment at the cap',
+      { seeds: [['Approved', 'own', { environment: 'live' }]], max: 1, code: 503, polled: { status: 'pending' }, logged: 'check didit.environment' },
+    ],
+    [
+      'three ended sessions at the cap',
+      {
+        seeds: [['Declined'], ['Expired'], ['Abandoned']],
+        code: 403,
+        polled: { status: 'rejected', reason: capText },
+        says: capText,
+        logged: '3 Didit sessions for this email reach the cap of 3',
+      },
+    ],
+    [
+      'a listed status it does not know at the cap',
+      {
+        seeds: [['Declined'], ['Expired'], ['Awaiting Payment Review']],
+        code: 503,
+        polled: { status: 'pending' },
+        logged: 'unknown status "Awaiting Payment Review"',
+      },
+    ],
+  ])('answers Continue over %s', async (_name, { seeds, max, code, creates = 0, polled, says, logged }) => {
+    const lines = captureLogs();
     const register = vi.spyOn(HcAuthClient.prototype, 'registerAndAuthorize').mockResolvedValue();
-    const { request, emails, didit } = await diditApp({ hc_auth: HC }, new HcAuthClient(HC));
-    const agent = await signingAgent();
-    didit.seed({ vendor_data: SUBJECT, status: 'Approved', metadata: { agent_key: agent.agentKey } });
-    const { session, token } = await joined(request, emails, agent);
+    const didit = max ? { ...DIDIT_SERVICE.didit!, max_sessions_per_email: max } : DIDIT_SERVICE.didit;
+    const app = await joinedApp({ hc_auth: HC, didit }, new HcAuthClient(HC));
+    const owner = { own: app.agent.agentKey, other: 'uhCAkOther' };
+    const seeded = seeds.map(([s, by, extra]) =>
+      app.didit.seed({ vendor_data: SUBJECT, status: s, metadata: by ? { agent_key: owner[by] } : null, ...extra }),
+    );
+    const metadata = structuredClone(seeded.map((s) => s.metadata));
 
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain('Your identity is verified. Go back to the app. It finishes joining by itself.');
-    expect(didit.calls('create')).toHaveLength(0);
-    expect((await status(request, session)).status).toBe('ready');
-  });
-
-  it("never completes from another key's approval, and starts a new session under the cap", async () => {
-    const { request, emails, didit } = await diditApp();
-    didit.seed({ vendor_data: SUBJECT, status: 'Approved', metadata: { agent_key: 'uhCAkOther' } });
-    const { session, token } = await joined(request, emails, await signingAgent());
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(303);
-    expect(didit.calls('create')).toHaveLength(1);
-    expect(didit.sessions).toHaveLength(2);
-    expect((await status(request, session)).status).toBe('pending');
-  });
-
-  it('takes up an in-review session of this key, and polls it slowly', async () => {
-    const { request, emails, didit } = await diditApp();
-    const agent = await signingAgent();
-    didit.seed({ vendor_data: SUBJECT, status: 'In Review', metadata: { agent_key: agent.agentKey } });
-    const { session, token } = await joined(request, emails, agent);
-
-    const res = await pressContinue(request, token);
-    expect(await res.text()).toContain('Your verification is in review. After the review, the app continues by itself.');
-    expect(didit.calls('create')).toHaveLength(0);
-    const polled = await status(request, session);
-    expect(polled.challenges[0].metadata.state).toBe('in_review');
-    expect(polled.poll_interval_ms).toBe(60_000);
-  });
-
-  it("completes from this key's older approval before another key's newer open session", async () => {
-    const { request, emails, didit } = await diditApp();
-    const agent = await signingAgent();
-    didit.seed({ vendor_data: SUBJECT, status: 'Approved', metadata: { agent_key: agent.agentKey } });
-    const open = didit.seed({ vendor_data: SUBJECT, status: 'In Progress', metadata: { agent_key: 'uhCAkOther' } });
-    const { token } = await joined(request, emails, agent);
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain('Your identity is verified.');
-    expect(didit.calls('create')).toHaveLength(0);
-    expect(open.metadata).toEqual({ agent_key: 'uhCAkOther' });
-  });
-
-  it('makes the join ready from the Continue page itself, and still answers a page when hc-auth fails', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const register = vi
-      .spyOn(HcAuthClient.prototype, 'registerAndAuthorize')
-      .mockRejectedValueOnce(new Error('hc-auth 503'))
-      .mockResolvedValue();
-    const { request, ctx, emails, didit } = await diditApp({ hc_auth: HC }, new HcAuthClient(HC));
-    const agent = await signingAgent();
-    didit.seed({ vendor_data: SUBJECT, status: 'Approved', metadata: { agent_key: agent.agentKey } });
-    const { session, token } = await joined(request, emails, agent);
-
-    const failed = await pressContinue(request, token);
-    expect(failed.status).toBe(200);
-    expect(failed.headers.get('Content-Type')).toContain('text/html');
-    expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
-
-    await pressContinue(request, token);
-    expect(register).toHaveBeenCalledTimes(2);
-    expect((await ctx.sessionStore.get(session))!.status).toBe('ready');
-  });
-
-  it('answers unavailable for a listed session of another environment, and rejects nothing', async () => {
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_email: 1 } });
-    const agent = await signingAgent();
-    didit.seed({ vendor_data: SUBJECT, status: 'Approved', environment: 'live', metadata: { agent_key: agent.agentKey } });
-    const { session, token } = await joined(request, emails, agent);
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(503);
-    expect(errors.mock.calls.flat().join(' ')).toContain('check didit.environment');
-    expect((await status(request, session)).status).toBe('pending');
-    expect(didit.calls('create')).toHaveLength(0);
-  });
-
-  it('rejects the join at the cap with no create, and logs why', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    for (const s of ['Declined', 'Expired', 'Abandoned']) didit.seed({ vendor_data: SUBJECT, status: s });
-    const { session, token } = await joined(request, emails, await signingAgent());
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(403);
-    expect(warn.mock.calls.flat().join(' ')).toContain('3 Didit sessions for this email reach the cap of 3');
-    const text = 'This email address has no identity verification attempts left. Contact support.';
-    expect(await res.text()).toContain(text);
-    expect(didit.calls('create')).toHaveLength(0);
-    expect(await status(request, session)).toEqual({ status: 'rejected', reason: text });
-  });
-
-  it('answers unavailable rather than rejecting at the cap when a listed session has a status it does not know', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    for (const s of ['Declined', 'Expired', 'Awaiting Payment Review']) didit.seed({ vendor_data: SUBJECT, status: s });
-    const { session, token } = await joined(request, emails, await signingAgent());
-
-    const res = await pressContinue(request, token);
-    expect(res.status).toBe(503);
-    expect(errors.mock.calls.flat().join(' ')).toContain('unknown status "Awaiting Payment Review"');
-    expect(didit.calls('create')).toHaveLength(0);
-    expect((await status(request, session)).status).toBe('pending');
+    const res = await pressContinue(app.request, app.token);
+    expect(res.status).toBe(code);
+    if (code === 303) expect(res.headers.get('Location')).toBe(app.didit.sessions.at(-1)!.url);
+    if (says) expect(await res.text()).toContain(says);
+    if (logged) expect(lines.join('\n')).toContain(logged);
+    expect(app.didit.calls('create')).toHaveLength(creates);
+    expect(seeded.map((s) => s.metadata)).toEqual(metadata);
+    const shown = await status(app.request, app.session);
+    expect(shown).toMatchObject(polled);
+    if (polled.status === 'rejected') expect(shown).toEqual(polled);
+    expect(register).toHaveBeenCalledTimes(polled.status === 'ready' ? 1 : 0);
   });
 
   it('changes nothing while Didit is unreachable', async () => {
-    const { request, ctx, emails, didit } = await diditApp();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { session, token } = await joined(request, emails, await signingAgent());
+    const { request, ctx, didit, session, token } = await joinedApp();
+    captureLogs();
     const before = await ctx.sessionStore.get(session);
     didit.down = true;
 
@@ -619,8 +521,7 @@ describe('POST /v1/didit/{token}', () => {
   });
 
   it('sends a second Continue back to the recorded open session', async () => {
-    const { request, emails, didit } = await diditApp();
-    const { token } = await joined(request, emails, await signingAgent());
+    const { request, didit, token } = await joinedApp();
     await pressContinue(request, token);
     const again = await pressContinue(request, token);
 
@@ -632,8 +533,7 @@ describe('POST /v1/didit/{token}', () => {
 
   it('starts a new attempt after a decline, and after Didit forgets the session', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
+    const { request, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
     didit.sessions[0].status = 'Declined';
     later();
@@ -643,7 +543,7 @@ describe('POST /v1/didit/{token}', () => {
     expect(page).toContain('Your last verification did not pass. Continue to start a new attempt.');
     expect((await pressContinue(request, token)).headers.get('Location')).toBe(didit.sessions[1].url);
 
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    captureLogs();
     didit.sessions.splice(1, 1);
     expect((await pressContinue(request, token)).headers.get('Location')).toBe(didit.sessions[1].url);
     expect(didit.sessions).toHaveLength(2);
@@ -652,19 +552,20 @@ describe('POST /v1/didit/{token}', () => {
 });
 
 describe('status for a didit_with_email join', () => {
-  it.each([
-    ['In Progress', 15_000],
-    ['In Review', 60_000],
-    ['Declined', 300_000],
-    ['Expired', 300_000],
-  ])('reads Didit at most once per interval after %s, however many polls arrive', async (diditStatus, interval) => {
+  it.each<[string, (didit: FakeDidit) => void, number, string]>([
+    ['In Progress', (d) => (d.sessions[0].status = 'In Progress'), 15_000, 'in_progress'],
+    ['In Review', (d) => (d.sessions[0].status = 'In Review'), 60_000, 'in_review'],
+    ['Declined', (d) => (d.sessions[0].status = 'Declined'), 300_000, 'declined'],
+    ['Expired', (d) => (d.sessions[0].status = 'Expired'), 300_000, 'expired'],
+    ['a failed read', (d) => (d.down = true), 15_000, 'in_progress'],
+  ])('reads Didit at most once per interval after %s, however many polls arrive', async (_name, change, interval, state) => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
+    captureLogs();
+    const { request, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
-    didit.sessions[0].status = diditStatus;
+    change(didit);
     later();
-    await status(request, session);
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ metadata: { state } }] });
     const reads = () => didit.calls('decision').length;
     const start = reads();
 
@@ -678,12 +579,12 @@ describe('status for a didit_with_email join', () => {
     expect(reads()).toBe(start + 1);
   });
 
-  it('makes the join ready on an Approved decision for this join', async () => {
+  it('makes the join ready on an Approved decision for this join, and registers the email as sent', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const register = vi.spyOn(HcAuthClient.prototype, 'registerAndAuthorize').mockResolvedValue();
     const { request, emails, didit } = await diditApp({ hc_auth: HC }, new HcAuthClient(HC));
     const agent = await signingAgent();
-    const { session, token } = await joined(request, emails, agent);
+    const { session, token } = await joined(request, emails, agent, ` ${EMAIL}`);
     await pressContinue(request, token);
     expect(register).not.toHaveBeenCalled();
 
@@ -691,87 +592,64 @@ describe('status for a didit_with_email join', () => {
     later();
     expect((await status(request, session)).status).toBe('ready');
     expect(register).toHaveBeenCalledTimes(1);
-    expect(register.mock.calls[0][1]).toEqual({ agent_key: agent.agentKey, happ_id: 'test-app', email: EMAIL });
+    expect(register.mock.calls[0][1]).toEqual({ agent_key: agent.agentKey, happ_id: 'test-app', email: ` ${EMAIL}` });
   });
 
-  it.each([
-    ['another workflow', 'workflow_id', { workflow_id: '99999999-2222-4333-8444-555555555555' }],
-    ['another environment', 'environment', { environment: 'live' }],
-  ])('never completes on a decision with %s, and keeps the session as a config fault', async (_name, field, change) => {
+  it.each<[string, Partial<FakeSession>, string, string[]]>([
+    ['another workflow', { workflow_id: OTHER_WORKFLOW }, 'in_progress', [`has workflow_id "${OTHER_WORKFLOW}", configured `, 'check didit.workflow_id']],
+    ['another environment', { environment: 'live' }, 'in_progress', ['has environment "live", configured ', 'check didit.environment']],
+    ['another agent key', { metadata: { agent_key: 'uhCAkOther' } }, 'link_sent', ['differs']],
+    ['an unknown status', { status: 'Approved Pending Payment' }, 'in_progress', ['unknown status']],
+  ])('never completes on a decision with %s', async (_name, change, state, logged) => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
+    const lines = captureLogs();
+    const { request, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
 
     Object.assign(didit.sessions[0], { status: 'Approved' }, change);
     later();
-    const polled = await status(request, session);
-    expect(polled.status).toBe('pending');
-    expect(polled.challenges[0].metadata.state).toBe('in_progress');
-    expect(errors.mock.calls.flat().join(' ')).toContain(
-      `has ${field} ${JSON.stringify((change as Record<string, string>)[field])}, configured `,
-    );
-    expect(errors.mock.calls.flat().join(' ')).toContain(`check didit.${field}`);
+    expect(await status(request, session)).toMatchObject({
+      status: 'pending',
+      challenges: [{ completed: false, metadata: { state } }],
+    });
+    for (const text of logged) expect(lines.join('\n')).toContain(text);
   });
 
-  it.each([
-    ['another agent key', { metadata: { agent_key: 'uhCAkOther' } }],
-    ['an unknown status', { status: 'Approved Pending Payment' }],
-  ])('never completes on a decision with %s', async (_name, change) => {
+  it("reuses another key's open session at the cap, and never completes the first key's join from it", async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
-    await pressContinue(request, token);
-
-    Object.assign(didit.sessions[0], { status: 'Approved' }, change);
-    later();
-    const polled = await status(request, session);
-    expect(polled.status).toBe('pending');
-    expect(polled.challenges[0].completed).toBe(false);
-    expect(warn.mock.calls.flat().join(' ')).toMatch(/differs|unknown status/);
-  });
-
-  it("never completes the first key's join from a session a second key took over", async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    const first = await signingAgent();
-    const second = await signingAgent();
-    const a = await joined(request, emails, first);
-    await pressContinue(request, a.token);
+    captureLogs();
+    const { request, emails, didit, ...first } = await joinedApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_email: 1 } });
+    await pressContinue(request, first.token);
     later(61_000);
-    const b = await joined(request, emails, second);
+    const secondAgent = await signingAgent();
+    const second = await joined(request, emails, secondAgent);
 
-    const takeover = await pressContinue(request, b.token);
+    const takeover = await pressContinue(request, second.token);
     expect(takeover.headers.get('Location')).toBe(didit.sessions[0].url);
     expect(didit.sessions).toHaveLength(1);
-    expect(didit.sessions[0].metadata).toEqual({ agent_key: second.agentKey });
+    expect(didit.sessions[0].metadata).toEqual({ agent_key: secondAgent.agentKey });
 
     didit.sessions[0].status = 'Approved';
     later();
-    const firstPoll = await status(request, a.session);
+    const firstPoll = await status(request, first.session);
     expect(firstPoll.status).toBe('pending');
     expect(firstPoll.challenges[0].metadata.state).toBe('link_sent');
-    expect((await status(request, b.session)).status).toBe('ready');
+    expect((await status(request, second.session)).status).toBe('ready');
 
     later();
-    expect((await status(request, a.session)).status).toBe('pending');
+    expect((await status(request, first.session)).status).toBe('pending');
   });
 
   it("keeps reading other joins' sessions while one session's reads fail", async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureLogs();
     const { request, emails, didit } = await diditApp();
     const stuck = await joined(request, emails, await signingAgent(), 'stuck@example.com');
     const other = await joined(request, emails, await signingAgent());
     await pressContinue(request, stuck.token);
     await pressContinue(request, other.token);
 
-    didit.sessions[0].workflow_id = '99999999-2222-4333-8444-555555555555';
+    didit.sessions[0].workflow_id = OTHER_WORKFLOW;
     didit.sessions[1].status = 'Approved';
     later();
     await status(request, stuck.session);
@@ -780,76 +658,51 @@ describe('status for a didit_with_email join', () => {
 
   it('forgets a session recorded under an earlier didit.workflow_id', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, ctx, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
+    const lines = captureLogs();
+    const { request, ctx, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
-    const earlier = '99999999-2222-4333-8444-555555555555';
     const stored = (await ctx.sessionStore.get(session))!;
-    stored.challenges[0].link!.attempt!.workflow_id = earlier;
+    stored.challenges[0].link!.attempt!.workflow_id = OTHER_WORKFLOW;
     await ctx.sessionStore.update(session, { challenges: stored.challenges });
-    didit.sessions[0].workflow_id = earlier;
+    didit.sessions[0].workflow_id = OTHER_WORKFLOW;
 
     later();
     expect((await status(request, session)).challenges[0].metadata.state).toBe('link_sent');
-    expect(warn.mock.calls.flat().join(' ')).toContain('was recorded under an earlier didit.workflow_id');
-  });
-
-  it('serves the stored state while Didit is unreachable', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
-    await pressContinue(request, token);
-    didit.down = true;
-    later();
-    const polled = await status(request, session);
-    expect(polled.status).toBe('pending');
-    expect(polled.challenges[0].metadata.state).toBe('in_progress');
-
-    const reads = () => didit.calls('decision').length;
-    const failed = reads();
-    later(14_000);
-    await status(request, session);
-    expect(reads()).toBe(failed);
-    later(1000);
-    await status(request, session);
-    expect(reads()).toBe(failed + 1);
+    expect(lines.join('\n')).toContain('was recorded under an earlier didit.workflow_id');
   });
 });
 
 describe('the ready path of a didit_with_email join', () => {
-  it('leaves the session pending with the challenge approved when hc-auth fails, and the next status completes it', async () => {
+  it('keeps an approval read by status when hc-auth fails, retries the ready path on Continue and on status, and the next status completes it', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureLogs();
     const register = vi
       .spyOn(HcAuthClient.prototype, 'registerAndAuthorize')
       .mockRejectedValueOnce(new Error('hc-auth 503'))
+      .mockRejectedValueOnce(new Error('hc-auth 503'))
       .mockResolvedValue();
-    const { request, ctx, emails, didit } = await diditApp({ hc_auth: HC }, new HcAuthClient(HC));
-    const { session, token } = await joined(request, emails, await signingAgent());
+    const { request, ctx, didit, session, token } = await joinedApp({ hc_auth: HC }, new HcAuthClient(HC));
     await pressContinue(request, token);
     didit.sessions[0].status = 'Approved';
     later();
 
-    const failed = await request(`/v1/join/${session}/status`);
-    expect(failed.status).toBe(503);
+    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
     const stored = (await ctx.sessionStore.get(session))!;
     expect(stored.status).toBe('pending');
     expect(stored.challenges[0].completed).toBe(true);
 
-    const earlier = '99999999-2222-4333-8444-555555555555';
-    stored.challenges[0].link!.attempt!.workflow_id = earlier;
-    await ctx.sessionStore.update(session, { challenges: stored.challenges });
+    const page = await pressContinue(request, token);
+    expect(page.status).toBe(200);
+    expect(page.headers.get('Content-Type')).toContain('text/html');
+    expect(register).toHaveBeenCalledTimes(2);
+    expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
 
     const reads = didit.calls('decision').length;
     expect((await status(request, session)).status).toBe('ready');
     expect(didit.calls('decision')).toHaveLength(reads);
-    expect(register).toHaveBeenCalledTimes(2);
+    expect(register).toHaveBeenCalledTimes(3);
   });
-});
 
-describe('didit_with_email beside the rest of the ready path', () => {
   it('authorizes the agent on every linker when the join turns ready, and not before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const linkers = ['https://l1.example.com', 'https://l2.example.com'];
@@ -885,8 +738,10 @@ describe('didit_with_email beside the rest of the ready path', () => {
       vi.spyOn(client, 'getRecord').mockResolvedValueOnce(null).mockImplementation(async () => ({ state, pubKey: 'k' }));
       vi.spyOn(client, 'requestAuth').mockResolvedValue();
       const register = vi.spyOn(client, 'registerAndAuthorize').mockResolvedValue();
-      const { request, emails, didit } = await diditApp({ auth_methods: ['hc_auth_approval', 'didit_with_email'], hc_auth: HC }, client);
-      const { session, token } = await joined(request, emails, await signingAgent());
+      const { request, didit, session, token } = await joinedApp(
+        { auth_methods: ['hc_auth_approval', 'didit_with_email'], hc_auth: HC },
+        client,
+      );
       await pressContinue(request, token);
 
       const admin = () => {
@@ -930,9 +785,7 @@ describe('didit_with_email beside the rest of the ready path', () => {
 describe('POST /v1/join/resume for a didit_with_email join', () => {
   it('returns the refreshed challenge, and never emails or creates', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, emails, didit } = await diditApp();
-    const agent = await signingAgent();
-    const { session, token } = await joined(request, emails, agent);
+    const { request, emails, didit, agent, session, token } = await joinedApp();
     await pressContinue(request, token);
     didit.sessions[0].status = 'In Review';
     later();
@@ -946,74 +799,37 @@ describe('POST /v1/join/resume for a didit_with_email join', () => {
     expect(emails).toHaveLength(1);
     expect(didit.calls('create')).toHaveLength(1);
   });
-
 });
 
 describe('GET /v1/didit/{token}/done', () => {
   it.each([
-    ['In Progress', 'Your verification is still in progress. Go back to the app. It continues by itself.'],
-    ['In Review', 'Your verification is in review. After the review, the app continues by itself.'],
-    ['Declined', 'Your verification did not pass. To try again, open the link in your email again.'],
-    ['Expired', 'Your verification did not pass. To try again, open the link in your email again.'],
-    [undefined, 'We could not find your verification. To start again, open the link in your email and press Continue.'],
-  ])('shows where a %s verification stands', async (didStatus, text) => {
+    ['In Progress', 'Your verification is still in progress. Go back to the app. It continues by itself.', 'pending'],
+    ['In Review', 'Your verification is in review. After the review, the app continues by itself.', 'pending'],
+    ['Declined', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
+    ['Expired', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
+    [undefined, 'We could not find your verification. To start again, open the link in your email and press Continue.', 'pending'],
+    ['Approved', VERIFIED, 'ready'],
+  ])('shows where a %s verification stands, whatever the query says', async (didStatus, text, joinStatus) => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { request, emails, didit } = await diditApp();
-    const { token } = await joined(request, emails, await signingAgent());
+    captureLogs();
+    const { request, ctx, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
     if (didStatus) didit.sessions[0].status = didStatus;
     else didit.sessions.splice(0, 1);
     later();
-    const res = await request(`/v1/didit/${token}/done?verificationSessionId=forged&status=Approved`);
+    const query = didStatus === 'Approved' ? 'status=Declined' : 'verificationSessionId=forged&status=Approved';
+    const res = await request(`/v1/didit/${token}/done?${query}`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain(text);
-  });
-
-  it('completes the join on approval, whatever its query string says', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, ctx, emails, didit } = await diditApp();
-    const { session, token } = await joined(request, emails, await signingAgent());
-    await pressContinue(request, token);
-
-    const early = await request(`/v1/didit/${token}/done?status=Approved`);
-    expect(await early.text()).toContain('still in progress');
-    expect((await status(request, session)).status).toBe('pending');
-
-    didit.sessions[0].status = 'Approved';
-    later();
-    const res = await request(`/v1/didit/${token}/done?status=Declined`);
-    expect(await res.text()).toContain('Your identity is verified. Go back to the app. It finishes joining by itself.');
-    expect((await ctx.sessionStore.get(session))!.status).toBe('ready');
+    expect((await ctx.sessionStore.get(session))!.status).toBe(joinStatus);
   });
 });
 
 describe('POST /v1/join/{session}/resend', () => {
-  it('emails a new link after the interval, and every link keeps working', async () => {
+  it('emails a new link after the interval, keeps every link working, and answers 401, 404, 429 and 503 as the contract says', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, emails } = await diditApp();
-    const { session, token, join } = await joined(request, emails, await signingAgent());
-    const challenge_id = join.challenges[0].id;
-
-    later(61_000);
-    const res = await postJson(request, `/v1/join/${session}/resend`, { challenge_id });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.status).toBe('pending');
-    expect(Date.parse(body.challenges[0].metadata.resend_available_at)).toBe(Date.now() + 60_000);
-    expect(emails).toHaveLength(2);
-
-    const fresh = linkToken(emails[1]);
-    expect(fresh).not.toBe(token);
-    expect((await request(`/v1/didit/${token}`)).status).toBe(200);
-    expect((await request(`/v1/didit/${fresh}`)).status).toBe(200);
-  });
-
-  it('answers 401, 404, 429 and 503 as the contract says', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { request, emails } = await diditApp();
-    const { session, join } = await joined(request, emails, await signingAgent());
+    captureLogs();
+    const { request, emails, session, token, join } = await joinedApp();
     const challenge_id = join.challenges[0].id;
     const resend = (id: string, body: unknown) => postJson(request, `/v1/join/${id}/resend`, body);
 
@@ -1024,24 +840,30 @@ describe('POST /v1/join/{session}/resend', () => {
     expect(limited.headers.get('Retry-After')).toBe('60');
 
     later(61_000);
+    const res = await resend(session, { challenge_id });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('pending');
+    expect(Date.parse(body.challenges[0].metadata.resend_available_at)).toBe(Date.now() + 60_000);
+    expect(emails).toHaveLength(2);
+    const fresh = linkToken(emails[1]);
+    expect(fresh).not.toBe(token);
+    expect((await request(`/v1/didit/${token}`)).status).toBe(200);
+    expect((await request(`/v1/didit/${fresh}`)).status).toBe(200);
+
+    later(61_000);
     vi.spyOn(FileTransport.prototype, 'send').mockRejectedValueOnce(new Error('mail down'));
     expect((await resend(session, { challenge_id })).status).toBe(503);
 
     later(604_800_000);
     expect((await resend(session, { challenge_id })).status).toBe(401);
   });
-
 });
 
 describe('didit_with_email leaks nothing', () => {
   it('puts no token, hash, Didit id or subject id in a response, and no Didit body, URL or token in a log', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const lines: unknown[] = [];
-    for (const level of ['log', 'warn', 'error', 'info', 'debug'] as const) {
-      vi.spyOn(console, level).mockImplementation((...args) => {
-        lines.push(...args.map(String));
-      });
-    }
+    const lines = captureLogs(['log', 'warn', 'error', 'info', 'debug']);
     const { request, ctx, emails, didit } = await diditApp({
       auth_methods: [{ any_of: ['agent_allow_list', 'didit_with_email'] }],
     });

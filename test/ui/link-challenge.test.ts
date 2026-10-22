@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import type { Challenge, DiditWithEmailState } from '../../src/types.js';
 import '../../src/ui/joining-challenge-dialog.js';
 import '../../src/ui/joining-claims-form.js';
@@ -16,7 +16,7 @@ import type { ChallengeResendDetail } from '../../src/ui/link-challenge.js';
 
 const SERVICE_URL = 'https://joining.example.com/v1';
 
-type FetchSpy = ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>>;
+type FetchSpy = MockInstance<typeof fetch>;
 
 function linkChallenge(state: DiditWithEmailState = 'link_sent', resendInMs = -1): Challenge {
   return {
@@ -229,7 +229,9 @@ describe('JoiningFlow with didit_with_email', () => {
     const resent = gate(fetchSpy);
     const el = linkFlow();
     const errors: Error[] = [];
-    el.addEventListener('join-error', ((e: CustomEvent<{ error: Error }>) => errors.push(e.detail.error)) as EventListener);
+    el.addEventListener('join-error', ((e: CustomEvent<{ error: Error }>) => {
+      errors.push(e.detail.error);
+    }) as EventListener);
     document.body.appendChild(el);
     await vi.waitFor(() => expect(dialogPart(el, 'resend-button')).not.toBeNull());
 
@@ -294,11 +296,11 @@ describe('JoiningFlow with didit_with_email', () => {
     el.remove();
   });
 
-  it('keeps polling the same join when the element moves in the page', async () => {
+  it('keeps polling the same join when the element moves in the page, stops once removed, and starts again when added back', async () => {
     const fetchSpy = spyFetch();
     mockJoin(fetchSpy);
-    const poll = gate(fetchSpy);
-    fetchSpy.mockResolvedValueOnce(pending(60_000));
+    const moved = gate(fetchSpy);
+    const removed = gate(fetchSpy);
     const el = linkFlow();
     const errors: unknown[] = [];
     el.addEventListener('join-error', (e) => errors.push(e));
@@ -307,29 +309,19 @@ describe('JoiningFlow with didit_with_email', () => {
 
     document.body.appendChild(document.createElement('div'));
     document.body.insertBefore(el, document.body.lastChild);
-    poll.resolve(pending(1));
+    moved.resolve(pending(1));
     await vi.waitFor(() => expect(statusCalls(fetchSpy)).toBe(2));
     expect(fetchSpy).toHaveBeenCalledTimes(4);
-    expect(errors).toHaveLength(0);
-    el.remove();
-  });
-
-  it('stops polling once removed from the page, and starts again when added back', async () => {
-    const fetchSpy = spyFetch();
-    mockJoin(fetchSpy);
-    const poll = gate(fetchSpy);
-    const el = linkFlow();
-    document.body.appendChild(el);
-    await vi.waitFor(() => expect(statusCalls(fetchSpy)).toBe(1));
 
     el.remove();
-    poll.resolve(pending(1));
+    removed.resolve(pending(1));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(statusCalls(fetchSpy)).toBe(1);
+    expect(statusCalls(fetchSpy)).toBe(2);
 
     mockJoin(fetchSpy, 60_000);
     document.body.appendChild(el);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(6));
+    expect(errors).toHaveLength(0);
     el.remove();
   });
 

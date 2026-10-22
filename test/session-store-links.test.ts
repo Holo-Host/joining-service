@@ -109,16 +109,10 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
   });
 
   describe('expiry', () => {
-    it('keeps a pending link session until its link expires, past the pending TTL', async () => {
+    it('keeps a pending link session until its link expires, past the pending TTL, and a write never moves that', async () => {
       await store.create(session());
       vi.setSystemTime(NOW + 2 * TTL_MS);
       expect(await store.get('js_link')).not.toBeNull();
-      vi.setSystemTime(LINK_EXPIRES + 1);
-      expect(await store.get('js_link')).toBeNull();
-    });
-
-    it('does not move a pending expiry on a write', async () => {
-      await store.create(session());
       vi.setSystemTime(LINK_EXPIRES - 1000);
       await store.update('js_link', { challenges: [linkChallenge({ attempts: 1 })] });
       vi.setSystemTime(LINK_EXPIRES + 1);
@@ -160,79 +154,64 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
   });
 
   describe('progress never goes back', () => {
-    it('keeps a completed link challenge complete over a write of a newer, open attempt', async () => {
-      const approved = attempt({ status: 'Approved', read_at: NOW + 10 });
-      await store.create(session({ challenges: [linkChallenge({ completed: true }, { state: 'approved', attempt: approved })] }));
-      const newer = attempt({ session_id: 'didit_2', recorded_at: NOW + 20, read_at: NOW + 20 });
-      await store.update('js_link', {
-        challenges: [linkChallenge({ attempts: 1 }, { state: 'in_progress', attempt: newer })],
-      });
+    const approved = attempt({ status: 'Approved', read_at: NOW + 10 });
+    const newer = attempt({ session_id: 'didit_2', recorded_at: NOW + 20, read_at: NOW + 20 });
+    const reread = attempt({ status: 'In Review', read_at: NOW + 20_000 });
+    const plain: ChallengeState = {
+      challenge: { id: 'ch_email', type: 'email_code', description: 'Enter the code' },
+      expected_response: '123456',
+      completed: true,
+      attempts: 1,
+      expires_at: NOW + 600_000,
+    };
+
+    it.each<[string, ChallengeState, ChallengeState, object]>([
+      [
+        'keeps a completed link challenge complete over a write of a newer, open attempt',
+        linkChallenge({ completed: true }, { state: 'approved', attempt: approved }),
+        linkChallenge({ attempts: 1 }, { state: 'in_progress', attempt: newer }),
+        { completed: true, attempts: 1, link: { attempt: approved }, challenge: { metadata: { state: 'approved' } } },
+      ],
+      [
+        'takes an incoming approval over a stored newer, open attempt',
+        linkChallenge({}, { state: 'in_progress', attempt: newer }),
+        linkChallenge({ completed: true }, { state: 'approved', attempt: approved }),
+        { completed: true, link: { attempt: approved }, challenge: { metadata: { state: 'approved' } } },
+      ],
+      [
+        'keeps a newer Didit session over a stale write of an older one',
+        linkChallenge({}, { state: 'in_progress', attempt: newer }),
+        linkChallenge({}, { state: 'declined', attempt: attempt({ status: 'Declined', read_at: NOW + 6000 }) }),
+        { link: { attempt: newer } },
+      ],
+      [
+        'keeps a recorded Didit session over a stale write without one',
+        linkChallenge({}, { state: 'in_progress', attempt: attempt() }),
+        linkChallenge(),
+        { link: { attempt: { session_id: 'didit_1' } }, challenge: { metadata: { state: 'in_progress' } } },
+      ],
+      [
+        'takes a newer read of the same Didit session',
+        linkChallenge({}, { state: 'in_progress', attempt: attempt() }),
+        linkChallenge({}, { state: 'in_review', attempt: reread }),
+        { link: { attempt: reread } },
+      ],
+      [
+        'keeps every emailed token and the latest resend time over a stale write',
+        linkChallenge({}, { token_hashes: ['hash_1', 'hash_2'], resend_at: NOW + 120_000 }),
+        linkChallenge({}, { state: 'in_progress', attempt: attempt() }),
+        {
+          link: { token_hashes: ['hash_1', 'hash_2'] },
+          challenge: { metadata: { resend_available_at: new Date(NOW + 120_000).toISOString() } },
+        },
+      ],
+      ['leaves a challenge without link data exactly as written', plain, { ...plain, completed: false, attempts: 0 }, { completed: false, attempts: 0 }],
+    ])('%s', async (_name, stored, written, expected) => {
+      await store.create(session({ challenges: [stored] }));
+      await store.update('js_link', { challenges: [written] });
       const [cs] = (await store.get('js_link'))!.challenges;
-      expect(cs.completed).toBe(true);
-      expect(cs.link?.attempt).toEqual(approved);
-      expect(cs.challenge.metadata?.state).toBe('approved');
-      expect(cs.attempts).toBe(1);
-    });
-
-    it('takes an incoming approval over a stored newer, open attempt', async () => {
-      const newer = attempt({ session_id: 'didit_2', recorded_at: NOW + 20, read_at: NOW + 20 });
-      await store.create(session({ challenges: [linkChallenge({}, { state: 'in_progress', attempt: newer })] }));
-      const approved = attempt({ status: 'Approved', read_at: NOW + 10 });
-      await store.update('js_link', {
-        challenges: [linkChallenge({ completed: true }, { state: 'approved', attempt: approved })],
-      });
-      const [cs] = (await store.get('js_link'))!.challenges;
-      expect(cs.completed).toBe(true);
-      expect(cs.link?.attempt).toEqual(approved);
-      expect(cs.challenge.metadata?.state).toBe('approved');
-    });
-
-    it('keeps a newer Didit session over a stale write of an older one', async () => {
-      const newer = attempt({ session_id: 'didit_2', recorded_at: NOW + 5000, read_at: NOW + 5000 });
-      await store.create(session({ challenges: [linkChallenge({}, { state: 'in_progress', attempt: newer })] }));
-      await store.update('js_link', {
-        challenges: [linkChallenge({}, { state: 'declined', attempt: attempt({ status: 'Declined', read_at: NOW + 6000 }) })],
-      });
-      expect((await store.get('js_link'))!.challenges[0].link?.attempt).toEqual(newer);
-    });
-
-    it('keeps a recorded Didit session over a stale write without one', async () => {
-      await store.create(session({ challenges: [linkChallenge({}, { state: 'in_progress', attempt: attempt() })] }));
-      await store.update('js_link', { challenges: [linkChallenge()] });
-      const [cs] = (await store.get('js_link'))!.challenges;
-      expect(cs.link?.attempt?.session_id).toBe('didit_1');
-      expect(cs.challenge.metadata?.state).toBe('in_progress');
-    });
-
-    it('takes a newer read of the same Didit session', async () => {
-      await store.create(session({ challenges: [linkChallenge({}, { state: 'in_progress', attempt: attempt() })] }));
-      const reread = attempt({ status: 'In Review', read_at: NOW + 20_000 });
-      await store.update('js_link', { challenges: [linkChallenge({}, { state: 'in_review', attempt: reread })] });
-      expect((await store.get('js_link'))!.challenges[0].link?.attempt).toEqual(reread);
-    });
-
-    it('keeps every emailed token and the latest resend time over a stale write', async () => {
-      await store.create(session({
-        challenges: [linkChallenge({}, { token_hashes: ['hash_1', 'hash_2'], resend_at: NOW + 120_000 })],
-      }));
-      await store.update('js_link', { challenges: [linkChallenge({}, { state: 'in_progress', attempt: attempt() })] });
-      const [cs] = (await store.get('js_link'))!.challenges;
-      expect(cs.link?.token_hashes).toEqual(['hash_1', 'hash_2']);
-      expect(cs.challenge.metadata?.resend_available_at).toBe(new Date(NOW + 120_000).toISOString());
-      expect((await store.findByLinkToken('hash_2'))?.id).toBe('js_link');
-    });
-
-    it('leaves a challenge without link data exactly as written', async () => {
-      const plain: ChallengeState = {
-        challenge: { id: 'ch_email', type: 'email_code', description: 'Enter the code' },
-        expected_response: '123456',
-        completed: true,
-        attempts: 1,
-        expires_at: NOW + 600_000,
-      };
-      await store.create(session({ challenges: [plain] }));
-      await store.update('js_link', { challenges: [{ ...plain, completed: false, attempts: 0 }] });
-      expect((await store.get('js_link'))!.challenges[0]).toMatchObject({ completed: false, attempts: 0 });
+      expect(cs).toMatchObject(expected);
+      for (const hash of cs.link?.token_hashes ?? []) expect((await store.findByLinkToken(hash))?.id).toBe('js_link');
     });
   });
 
@@ -308,7 +287,7 @@ describe.each(factories.filter(([name]) => name !== 'cloudflare-kv'))('%s store,
   });
 });
 
-describe('sqlite cleanup', () => {
+describe('link session expiry in sqlite cleanup and KV writes', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
   });
@@ -330,17 +309,8 @@ describe('sqlite cleanup', () => {
     expect(await store.findByLinkToken('hash_1')).toBeNull();
     store.close();
   });
-});
 
-describe('KV writes for link sessions', () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('use an absolute expiration at the link expiry, on create and on update', async () => {
+  it('expires a pending KV link session at the link expiry, at least 60 seconds ahead as KV requires, and a ready one never', async () => {
     const kv = createMockKV();
     const store = new KvSessionStore(kv, TTL_SECONDS);
     await store.create(session());
@@ -351,24 +321,14 @@ describe('KV writes for link sessions', () => {
     for (const key of ['session:js_link', 'agent:uhCAk_agent\0acme-net', 'link:hash_1']) {
       expect(kv.store.get(key)).toMatchObject({ expiration, expirationTtl: undefined });
     }
-    for (const call of kv.put.mock.calls) {
+    for (const call of vi.mocked(kv.put).mock.calls) {
       expect(call[2]).toEqual({ expiration });
     }
-  });
 
-  it('write a link session close to its expiry 60 seconds ahead, as KV requires', async () => {
-    const kv = createMockKV();
-    const store = new KvSessionStore(kv, TTL_SECONDS);
-    await store.create(session());
     vi.setSystemTime(LINK_EXPIRES - 10_000);
-    await store.update('js_link', { challenges: [linkChallenge({ attempts: 1 })] });
+    await store.update('js_link', { challenges: [linkChallenge({ attempts: 2 })] });
     expect(kv.store.get('session:js_link')?.expiration).toBe(Math.floor((LINK_EXPIRES - 10_000) / 1000) + 60);
-  });
 
-  it('write a ready link session with no expiry', async () => {
-    const kv = createMockKV();
-    const store = new KvSessionStore(kv, TTL_SECONDS);
-    await store.create(session());
     await store.update('js_link', { status: 'ready' });
     expect(kv.store.get('session:js_link')).toMatchObject({ expiration: undefined, expirationTtl: undefined });
   });

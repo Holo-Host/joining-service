@@ -231,7 +231,9 @@ describe('JoiningFlow', () => {
     mockFetch.mockRejectedValue(new TypeError('no answer queued'));
     const el = createFlow({ claims: { hc_auth_approval: 'ada@example.com' } });
     const errors: JoinErrorDetail[] = [];
-    el.addEventListener('join-error', ((e: CustomEvent<JoinErrorDetail>) => errors.push(e.detail)) as EventListener);
+    el.addEventListener('join-error', ((e: CustomEvent<JoinErrorDetail>) => {
+      errors.push(e.detail);
+    }) as EventListener);
     document.body.appendChild(el);
     await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
     await el.updateComplete;

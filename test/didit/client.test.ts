@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   DiditClient,
@@ -18,7 +18,7 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-let fetchSpy: ReturnType<typeof vi.spyOn>;
+let fetchSpy: MockInstance<typeof fetch>;
 let client: DiditClient;
 
 beforeEach(() => {
@@ -74,13 +74,10 @@ describe('stateOf', () => {
     ['Abandoned', 'expired'],
     ['Kyc Expired', 'expired'],
     ['Approved', 'approved'],
+    ['approved', undefined],
+    ['constructor', undefined],
   ])('maps %s to %s', (status, state) => {
     expect(stateOf(status)).toBe(state);
-  });
-
-  it('knows no other status', () => {
-    expect(stateOf('approved')).toBeUndefined();
-    expect(stateOf('constructor')).toBeUndefined();
   });
 });
 
@@ -106,16 +103,7 @@ describe('DiditClient', () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('treats a create with no url as unavailable, naming the missing scope', async () => {
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    fetchSpy.mockResolvedValueOnce(json({ session_id: 's1', url: null, status: 'Not Started' }, 201));
-    await expect(client.createSession({ vendorData: 'v', callback: 'c', agentKey: 'k' })).rejects.toBeInstanceOf(
-      DiditUnavailableError,
-    );
-    expect(errors.mock.calls.join(' ')).toMatch(/Sessions write/);
-  });
-
-  it('reads a decision and keeps only the fields it compares', async () => {
+  it('reads a decision and keeps only the fields it compares, or null for a session Didit no longer has', async () => {
     fetchSpy.mockResolvedValueOnce(
       json({
         session_id: 's1',
@@ -138,9 +126,6 @@ describe('DiditClient', () => {
       environment: 'sandbox',
       agent_key: 'uhCAk1',
     });
-  });
-
-  it('answers null for a session Didit no longer has', async () => {
     fetchSpy.mockResolvedValueOnce(json({ detail: 'Not found.' }, 404));
     expect(await client.decision('gone')).toBeNull();
   });
@@ -170,16 +155,13 @@ describe('DiditClient', () => {
     });
   });
 
-  it('treats a refusal as unavailable', async () => {
+  it('treats a refusal, a timeout, a network failure or an unreadable body as unavailable', async () => {
     fetchSpy.mockResolvedValue(json({ detail: 'down' }, 503));
     await expect(client.decision('s1')).rejects.toBeInstanceOf(DiditUnavailableError);
     await expect(client.listSessions('v1')).rejects.toBeInstanceOf(DiditUnavailableError);
     await expect(client.createSession({ vendorData: 'v', callback: 'c', agentKey: 'k' })).rejects.toBeInstanceOf(
       DiditUnavailableError,
     );
-  });
-
-  it('treats a timeout or a network failure as unavailable', async () => {
     fetchSpy.mockRejectedValueOnce(new DOMException('The operation timed out.', 'TimeoutError'));
     await expect(client.decision('s1')).rejects.toThrow(/TimeoutError/);
     fetchSpy.mockRejectedValueOnce(new TypeError(`fetch failed ${SECRET_URL}`, { cause: { code: 'ENOTFOUND' } }));
@@ -196,6 +178,11 @@ describe('DiditClient', () => {
     fetchSpy.mockResolvedValueOnce(json({ detail: 'no such workflow' }, 400));
     await expect(client.listSessions('v1')).rejects.toBeInstanceOf(DiditUnavailableError);
     expect(errors.mock.calls.join(' ')).toMatch(/didit\.workflow_id/);
+    fetchSpy.mockResolvedValueOnce(json({ session_id: 's1', url: null, status: 'Not Started' }, 201));
+    await expect(client.createSession({ vendorData: 'v', callback: 'c', agentKey: 'k' })).rejects.toBeInstanceOf(
+      DiditUnavailableError,
+    );
+    expect(errors.mock.calls.join(' ')).toMatch(/Sessions write/);
   });
 
   it('never logs a Didit body, URL or token', async () => {
@@ -236,16 +223,13 @@ describe('DiditClient', () => {
     };
     const expected = { vendorData: 'v1', agentKey: 'uhCAk1' };
 
-    it('is undefined for a decision that belongs to this join', () => {
-      expect(client.mismatch(belongs, expected)).toBeUndefined();
-    });
-
     it.each([
-      ['workflow_id', { workflow_id: '99999999-2222-4333-8444-555555555555' }],
-      ['vendor_data', { vendor_data: 'v2' }],
-      ['environment', { environment: 'live' }],
-      ['metadata.agent_key', { agent_key: 'uhCAk2' }],
-    ])('names %s when it differs', (field, change) => {
+      ['no field for a decision of this join', undefined, {}],
+      ['workflow_id', 'workflow_id', { workflow_id: '99999999-2222-4333-8444-555555555555' }],
+      ['vendor_data', 'vendor_data', { vendor_data: 'v2' }],
+      ['environment', 'environment', { environment: 'live' }],
+      ['metadata.agent_key', 'metadata.agent_key', { agent_key: 'uhCAk2' }],
+    ])('names %s', (_name, field, change) => {
       expect(client.mismatch({ ...belongs, ...change }, expected)).toBe(field);
     });
   });

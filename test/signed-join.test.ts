@@ -7,6 +7,8 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+type Agent = Awaited<ReturnType<typeof signingAgent>>;
+
 const EMAIL_CONFIG = {
   auth_methods: ['email_code' as const],
   email: { provider: 'file' as const, output_dir: '/tmp/test-emails' },
@@ -58,41 +60,28 @@ describe('signed POST /v1/join', () => {
 });
 
 describe('POST /v1/join/resume', () => {
-  async function resume(request: Parameters<typeof postJson>[0], agent: Awaited<ReturnType<typeof signingAgent>>, extra: Record<string, unknown> = {}) {
+  async function resume(request: Parameters<typeof postJson>[0], agent: Agent, extra: Record<string, unknown> = {}) {
     return postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()), ...extra });
   }
 
-  it('refuses a bad signature before any lookup', async () => {
+  it.each<[string, string, (agent: Agent, other: Agent) => Promise<string>]>([
+    ['a signature by another key', 'invalid_signature', async (agent, other) => JSON.stringify({ agent_key: agent.agentKey, ...(await other.sign()) })],
+    ['no signature', 'invalid_signature', async (agent) => JSON.stringify({ agent_key: agent.agentKey })],
+    ['a cut-off body', 'invalid_json', async () => '{"agent_key":'],
+    ['a body that is not an object', 'invalid_json', async () => '42'],
+    ['a bad agent key', 'invalid_agent_key', async (agent) => JSON.stringify({ agent_key: 'uhCAknotakey', ...(await agent.sign()) })],
+    ['a malformed network', 'unknown_network', async (agent) => JSON.stringify({ agent_key: agent.agentKey, ...(await agent.sign()), network: 42 })],
+  ])('refuses %s with %s before any lookup', async (_name, code, body) => {
     const { request, ctx } = await createTestApp(EMAIL_CONFIG);
-    const agent = await signingAgent();
-    const other = await signingAgent();
     const lookups = vi.spyOn(ctx.sessionStore, 'findByAgentKey');
-
-    const res = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await other.sign()) });
+    const res = await request('/v1/join/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: await body(await signingAgent(), await signingAgent()),
+    });
     expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('invalid_signature');
-
-    const unsigned = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey });
-    expect((await unsigned.json()).error.code).toBe('invalid_signature');
-
-    for (const body of ['{"agent_key":', '42']) {
-      const malformed = await request('/v1/join/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-      expect(malformed.status).toBe(400);
-      expect((await malformed.json()).error.code).toBe('invalid_json');
-    }
+    expect((await res.json()).error.code).toBe(code);
     expect(lookups).not.toHaveBeenCalled();
-  });
-
-  it('refuses a bad agent key and a malformed network', async () => {
-    const { request } = await createTestApp(EMAIL_CONFIG);
-    const agent = await signingAgent();
-
-    const badKey = await postJson(request, '/v1/join/resume', { agent_key: 'uhCAknotakey', ...(await agent.sign()) });
-    expect((await badKey.json()).error.code).toBe('invalid_agent_key');
-
-    const network = await resume(request, agent, { network: 42 });
-    expect(network.status).toBe(400);
-    expect((await network.json()).error.code).toBe('unknown_network');
   });
 
   it('answers 404 join_not_found when the agent has no session', async () => {
