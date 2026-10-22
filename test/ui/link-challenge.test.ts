@@ -155,8 +155,8 @@ describe('JoiningFlow with didit_with_email', () => {
   const info = () => jsonResponse({ happ: { id: 't', name: 'T' }, auth_methods: ['didit_with_email'] });
   const joined = (pollIntervalMs: number, state: DiditWithEmailState = 'link_sent') =>
     jsonResponse({ session: 'js_1', status: 'pending', challenges: [linkChallenge(state)], poll_interval_ms: pollIntervalMs }, 201);
-  const pending = (pollIntervalMs: number, state: DiditWithEmailState = 'link_sent', resendInMs?: number) =>
-    jsonResponse({ status: 'pending', challenges: [linkChallenge(state, resendInMs)], poll_interval_ms: pollIntervalMs });
+  const pending = (pollIntervalMs: number, state: DiditWithEmailState = 'link_sent', resendInMs?: number, before: Challenge[] = []) =>
+    jsonResponse({ status: 'pending', challenges: [...before, linkChallenge(state, resendInMs)], poll_interval_ms: pollIntervalMs });
   const tooManyEmails = () => jsonResponse({ error: { code: 'rate_limited', message: 'Too many emails' } }, 429);
 
   function mockJoin(fetchSpy: FetchSpy, pollIntervalMs = 1) {
@@ -296,6 +296,27 @@ describe('JoiningFlow with didit_with_email', () => {
     el.remove();
   });
 
+  it('signs an agent_allow_list nonce offered beside the link in an any_of group, and completes without polling the link', async () => {
+    const fetchSpy = spyFetch();
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ happ: { id: 't', name: 'T' }, auth_methods: [{ any_of: ['didit_with_email', 'agent_allow_list'] }] }));
+    const nonce: Challenge = { id: 'ch_allow_1', type: 'agent_allow_list', description: 'Sign', group: 'g_0', metadata: { nonce: 'AQID' } };
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ session: 'js_1', status: 'pending', challenges: [{ ...linkChallenge(), group: 'g_0' }, nonce], poll_interval_ms: 1 }, 201),
+    );
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ status: 'ready' }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ roles: {} }));
+    const el = linkFlow();
+    el.signNonce = vi.fn().mockResolvedValue(new Uint8Array([4, 5, 6]));
+    const completed = vi.fn();
+    el.addEventListener('join-complete', completed);
+    document.body.appendChild(el);
+
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledOnce());
+    expect(JSON.parse((fetchSpy.mock.calls[2][1] as RequestInit).body as string)).toEqual({ challenge_id: 'ch_allow_1', response: 'BAUG' });
+    expect(statusCalls(fetchSpy)).toBe(0);
+    el.remove();
+  });
+
   it('keeps polling the same join when the element moves in the page, stops once removed, and starts again when added back', async () => {
     const fetchSpy = spyFetch();
     mockJoin(fetchSpy);
@@ -325,11 +346,12 @@ describe('JoiningFlow with didit_with_email', () => {
     el.remove();
   });
 
-  it('signs the join, polls past the attempt cap while the link is open, completes, and stays complete when moved', async () => {
+  it('signs the join, polls past the attempt cap while the link is open beside hc_auth_approval, completes, and stays complete when moved', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetchSpy = spyFetch();
     mockJoin(fetchSpy);
-    for (let i = 0; i < 35; i++) fetchSpy.mockResolvedValueOnce(pending(1, i < 20 ? 'link_sent' : 'in_progress'));
+    const approval: Challenge = { id: 'ch_hc_1', type: 'hc_auth_approval', description: 'Waiting for approval' };
+    for (let i = 0; i < 35; i++) fetchSpy.mockResolvedValueOnce(pending(1, i < 20 ? 'link_sent' : 'in_progress', undefined, [approval]));
     fetchSpy.mockResolvedValueOnce(jsonResponse({ error: { code: 'service_unavailable', message: 'hc-auth' } }, 503));
     fetchSpy.mockResolvedValueOnce(jsonResponse({ status: 'ready' }));
     fetchSpy.mockResolvedValueOnce(jsonResponse({ roles: {} }));

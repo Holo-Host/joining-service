@@ -201,11 +201,15 @@ export class JoiningFlow extends LitElement {
         continue;
       }
 
+      const isOpen = (c: Challenge) => !c.completed && !(c.group && satisfiedGroups.has(c.group));
+      const link = session.challenges.find((c) => c.type === LINK_CHALLENGE_TYPE && isOpen(c));
       let madeProgress = false;
 
       for (const challenge of session.challenges) {
-        if (challenge.completed) continue;
-        if (challenge.group && satisfiedGroups.has(challenge.group)) continue;
+        if (!isOpen(challenge)) continue;
+        // Left to the link's poll below, which runs once nothing else can act.
+        // The status it reads also settles hc_auth_approval.
+        if (challenge.type === LINK_CHALLENGE_TYPE || (link && challenge.type === 'hc_auth_approval')) continue;
 
         if (challenge.type === 'agent_allow_list') {
           const response = await this.forRun(run, this.handleAgentAllowList(challenge));
@@ -218,31 +222,7 @@ export class JoiningFlow extends LitElement {
           continue;
         }
 
-        if (challenge.type === LINK_CHALLENGE_TYPE) {
-          // No attempt cap, since the person may take days. A network or 5xx
-          // failure retries at the next interval.
-          this.currentChallenge = challenge;
-          await this.forRun(run, delay(session.pollIntervalMs ?? 5000));
-          if (!this.isConnected) {
-            this.endChallenges();
-            this.flowStatus = 'idle';
-            return;
-          }
-          const [polled] = await this.forRun(run, Promise.allSettled([session.pollStatus()]));
-          if (polled.status === 'fulfilled') {
-            session = polled.value;
-            this.pollNotice = undefined;
-          } else {
-            if (!isTransient(polled.reason)) throw polled.reason;
-            console.warn('[joining-flow] status poll failed, retrying:', polled.reason);
-            this.pollNotice = 'The joining service is unavailable. Retrying.';
-          }
-          madeProgress = true;
-          break;
-        }
-
         if (challenge.type === 'hc_auth_approval') {
-          // Polling type: show waiting UI, poll for resolution
           this.currentChallenge = challenge;
           if (++pollCount > this.maxPollAttempts) {
             this.currentChallenge = null;
@@ -264,7 +244,25 @@ export class JoiningFlow extends LitElement {
         break;
       }
 
-      if (!madeProgress) {
+      if (!madeProgress && link) {
+        // No attempt cap, since the person may take days.
+        this.currentChallenge = link;
+        await this.forRun(run, delay(session.pollIntervalMs ?? 5000));
+        if (!this.isConnected) {
+          this.endChallenges();
+          this.flowStatus = 'idle';
+          return;
+        }
+        const [polled] = await this.forRun(run, Promise.allSettled([session.pollStatus()]));
+        if (polled.status === 'fulfilled') {
+          session = polled.value;
+          this.pollNotice = undefined;
+        } else {
+          if (!isTransient(polled.reason)) throw polled.reason;
+          console.warn('[joining-flow] status poll failed, retrying:', polled.reason);
+          this.pollNotice = 'The joining service is unavailable. Retrying.';
+        }
+      } else if (!madeProgress) {
         if (++pollCount > this.maxPollAttempts) {
           throw new Error('Verification timed out. Please try again.');
         }
