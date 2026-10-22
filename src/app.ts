@@ -832,40 +832,40 @@ export function createApp(ctx: ServiceContext): Hono {
       }
     }
 
-    // After every other method and the invite check, so a refused join sends no email.
+    let finalStatus: typeof status;
     try {
+      // After every other method and the invite check, so a refused join sends no email.
       await sendLinks(didit, agent_key, claims, allChallenges);
+      finalStatus = allSatisfied(allChallenges) ? 'ready' : status;
+
+      if (finalStatus === 'ready') {
+        await createReadySession(
+          ctx,
+          sessionId,
+          agent_key,
+          claims,
+          allChallenges,
+          { beforeCreate: dropReplacedLink },
+          requestedNetwork,
+        );
+      } else {
+        await dropReplacedLink();
+        await ctx.sessionStore.create({
+          id: sessionId,
+          agent_key,
+          status: finalStatus,
+          challenges: allChallenges,
+          claims,
+          created_at: Date.now(),
+          network: requestedNetwork,
+        });
+      }
     } catch (e) {
       const invite = ctx.authPlugins.get('invite_code');
       if (invite instanceof InviteCodeAuthMethod && allChallenges.some((cs) => cs.challenge.type === 'invite_code' && cs.completed)) {
         invite.restore(claims.invite_code);
       }
       throw e;
-    }
-
-    const finalStatus = allSatisfied(allChallenges) ? 'ready' : status;
-
-    if (finalStatus === 'ready') {
-      await createReadySession(
-        ctx,
-        sessionId,
-        agent_key,
-        claims,
-        allChallenges,
-        { beforeCreate: dropReplacedLink },
-        requestedNetwork,
-      );
-    } else {
-      await dropReplacedLink();
-      await ctx.sessionStore.create({
-        id: sessionId,
-        agent_key,
-        status: finalStatus,
-        challenges: allChallenges,
-        claims,
-        created_at: Date.now(),
-        network: requestedNetwork,
-      });
     }
 
     const response: Record<string, unknown> = {

@@ -306,7 +306,7 @@ The client sends its agent key and optional identity claims. The server determin
 | 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
 | 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth step failed. Nothing was created. |
 
-A join refused at its `didit_with_email` email leaves its invite code unused.
+A join refused after its invite code passed leaves the code unused.
 
 A refused join leaves a pending `didit_with_email` session and its links working.
 

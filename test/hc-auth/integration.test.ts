@@ -81,6 +81,27 @@ describe('hc-auth integration — open auth (immediate ready)', () => {
     expect((await res.json()).error.code).toBe('service_unavailable');
   });
 
+  it('keeps the invite code of a join that fails at a required hc-auth step', async () => {
+    const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true };
+    const client = new HcAuthClient(HC);
+    vi.spyOn(client, 'registerAndAuthorize').mockRejectedValueOnce(new Error('hc-auth down')).mockResolvedValue();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request } = await createTestApp(
+      { auth_methods: ['invite_code'], invite_codes: ['GOOD'], hc_auth: HC },
+      undefined,
+      undefined,
+      client,
+    );
+    const join = () => request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: fakeAgentKey(44), claims: { invite_code: 'GOOD' } }),
+    });
+
+    expect((await join()).status).toBe(503);
+    expect((await join()).status).toBe(201);
+  });
+
   it('returns a structured JSON error, not plain text, for an unexpected throw', async () => {
     const client = new HcAuthClient({
       url: 'https://auth.example.com',
