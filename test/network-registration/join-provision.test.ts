@@ -180,8 +180,6 @@ describe('network-aware join and provision', () => {
       network_registration: { admin_secret: ADMIN_SECRET },
     });
 
-    // Spaces and `!` never match HAPP_ID_RE, so this is rejected by the
-    // format check itself, without a store lookup.
     const joinRes = await request('/v1/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -190,6 +188,7 @@ describe('network-aware join and provision', () => {
     expect(joinRes.status).toBe(400);
     const body = await joinRes.json();
     expect(body.error.code).toBe('unknown_network');
+    expect(body.error.message).toBe('network does not match the network-id format');
   });
 
   it('join with a non-string network: 400 unknown_network', async () => {

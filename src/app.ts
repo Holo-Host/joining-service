@@ -250,14 +250,7 @@ async function sendLinks(
   }
 }
 
-/**
- * Collapses the statically configured network's own happ id to the same
- * (undefined) session scope as an omitted `network` -- naming it explicitly
- * must behave exactly like omitting `network` entirely, so both spellings
- * land in one session scope instead of splitting one agent across two
- * "networks" that are really the same one. Shared by join and reconnect so
- * the collapse rule can't drift between the two call sites.
- */
+/** The static network's own happ id is the same session scope as an omitted `network`. */
 function normalizeNetwork(config: ServiceConfig, value: string | undefined): string | undefined {
   return value === config.happ.id ? undefined : value;
 }
@@ -357,8 +350,8 @@ function errorJson(code: string, message: string, status: number) {
   );
 }
 
-/** The `agent_key` and normalized `network` of a signed request, or the 400 that refuses them. */
-function signedRequestScope(
+/** The validated `agent_key` and normalized `network`, or the 400 that refuses them. */
+function requestScope(
   ctx: ServiceContext,
   body: { agent_key?: unknown; network?: unknown },
 ): { agentKey: string; network: string | undefined } | Response {
@@ -372,9 +365,9 @@ function signedRequestScope(
     return errorJson('invalid_agent_key', validation.reason!, 400);
   }
 
-  // Refused rather than falling back to the static scope, which would hand
-  // back a different network's session than the one asked for. The format
-  // check also bounds `network` before it reaches a KV key or an error body.
+  // Refused rather than falling back to the static scope, which would act on
+  // the static network instead of the one asked for. The format check also
+  // bounds `network` before it reaches a KV key or an error body.
   if (body.network !== undefined && typeof body.network !== 'string') {
     return errorJson('unknown_network', 'network must be a string', 400);
   }
@@ -546,8 +539,6 @@ export function createApp(ctx: ServiceContext): Hono {
     const { config } = ctx;
     const happId = c.req.param('happ_id');
 
-    // The statically configured network's id aliases the bare endpoint --
-    // same normalization rule as join (see POST /v1/join below).
     if (happId === config.happ.id) {
       return c.json(await buildStaticInfo(ctx));
     }
@@ -587,16 +578,10 @@ export function createApp(ctx: ServiceContext): Hono {
   // ---- POST /v1/join ----
   app.post('/v1/join', async (c) => {
     const body = await c.req.json();
-    const { agent_key, claims = {} } = body;
-
-    if (!agent_key) {
-      return errorJson('invalid_agent_key', 'agent_key is required', 400);
-    }
-
-    const validation = validateAgentKey(agent_key);
-    if (!validation.valid) {
-      return errorJson('invalid_agent_key', validation.reason!, 400);
-    }
+    const { claims = {} } = body;
+    const scope = requestScope(ctx, body);
+    if (scope instanceof Response) return scope;
+    const { agentKey: agent_key, network: requestedNetwork } = scope;
 
     const signed = body.timestamp !== undefined || body.signature !== undefined;
     if (signed) {
@@ -611,25 +596,11 @@ export function createApp(ctx: ServiceContext): Hono {
       );
     }
 
-    // Resolve the named network, if any, before touching any existing
-    // session state below -- a malformed/unregistered/disallowed `network`
-    // must not delete the caller's in-flight pending session as a side effect
-    // of a rejected request.
-    if (body.network !== undefined && typeof body.network !== 'string') {
-      return errorJson(
-        'unknown_network',
-        'network must be a string',
-        400,
-      );
-    }
-    const requestedNetwork = normalizeNetwork(ctx.config, body.network);
+    // Checked before the stale-session delete below, so a refused `network`
+    // leaves the caller's pending session in place.
     let networkRecord: NetworkRecord | undefined;
     if (requestedNetwork !== undefined) {
-      // Cheap format check before the store lookup so junk network names are
-      // rejected without a store round-trip.
-      const record = (ctx.networkStore && HAPP_ID_RE.test(requestedNetwork))
-        ? await ctx.networkStore.get(requestedNetwork)
-        : null;
+      const record = ctx.networkStore ? await ctx.networkStore.get(requestedNetwork) : null;
       if (!record) {
         return errorJson(
           'unknown_network',
@@ -1220,7 +1191,7 @@ export function createApp(ctx: ServiceContext): Hono {
     if (!body || typeof body !== 'object') {
       return errorJson('invalid_json', 'Request body must be a JSON object', 400);
     }
-    const scope = signedRequestScope(ctx, body);
+    const scope = requestScope(ctx, body);
     if (scope instanceof Response) return scope;
     const refused = await signatureError(ctx, scope.agentKey, body.timestamp, body.signature, (t) => `resume:${t}`);
     if (refused) return refused;
@@ -1256,7 +1227,7 @@ export function createApp(ctx: ServiceContext): Hono {
 
     const body = await c.req.json();
 
-    const scope = signedRequestScope(ctx, body);
+    const scope = requestScope(ctx, body);
     if (scope instanceof Response) return scope;
     const { agentKey: agent_key, network: requestedNetwork } = scope;
 

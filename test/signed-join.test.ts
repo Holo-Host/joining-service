@@ -72,6 +72,7 @@ describe('POST /v1/join/resume', () => {
     ['a bad agent key', 'invalid_agent_key', async (agent) => JSON.stringify({ agent_key: 'uhCAknotakey', ...(await agent.sign()) })],
     ['a small-order key, for which one fixed signature verifies any message', 'invalid_signature', async () => JSON.stringify(smallOrderSigned())],
     ['a malformed network', 'unknown_network', async (agent) => JSON.stringify({ agent_key: agent.agentKey, ...(await agent.sign()), network: 42 })],
+    ['a network outside the network-id format', 'unknown_network', async (agent) => JSON.stringify({ agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), network: 'Not A Valid Id!' })],
   ])('refuses %s with %s before any lookup', async (_name, code, body) => {
     const { request, ctx } = await createTestApp(EMAIL_CONFIG);
     const lookups = vi.spyOn(ctx.sessionStore, 'findByAgentKey');
