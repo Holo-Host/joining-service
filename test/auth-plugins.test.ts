@@ -7,6 +7,7 @@ import { MemoryAllowedAgentStore } from '../src/agent-registration/memory-store.
 import { MemorySessionStore } from '../src/session/memory-store.js';
 import { BASE_URL, DIDIT_SERVICE } from './didit/fixtures.js';
 import { captureEmails, signingAgent } from './didit/harness.js';
+import { takeLink, type DiditWithEmailAuthMethod } from '../src/auth-methods/didit-with-email.js';
 import type { AuthMethod } from '../src/types.js';
 
 /**
@@ -77,8 +78,10 @@ describe('buildAuthPlugins', () => {
     const plugin = buildAuthPlugins(config, {
       emailTransport: new FileTransport('/tmp/test-emails'),
       sessionStore: new MemorySessionStore(),
-    }).get('didit_with_email')!;
-    await plugin.createChallenges((await signingAgent()).agentKey, { email: 'ada@example.com' }, config);
+    }).get('didit_with_email') as DiditWithEmailAuthMethod;
+    const { agentKey } = await signingAgent();
+    const [challenge] = await plugin.createChallenges(agentKey, { email: 'ada@example.com' }, config);
+    await plugin.sendFirst(agentKey, 'ada@example.com', { expires_at: Date.now(), ...takeLink(challenge) });
     expect(sent[0].subject).toBe('Verify your identity to join Acme');
     expect(sent[0].body).toContain(`${BASE_URL}/v1/didit/`);
     vi.restoreAllMocks();

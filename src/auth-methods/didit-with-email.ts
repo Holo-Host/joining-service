@@ -184,7 +184,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   async createChallenges(
-    agentKey: string,
+    _agentKey: string,
     claims: Record<string, string>,
     _config: unknown,
     joinContext?: JoinContext,
@@ -205,12 +205,11 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       subject_id: subjectId(address, this.config.subject_key),
       network_name: network ? (network.happ?.name ?? network.happ_id) : this.happName,
     };
-    const first = await this.sendLink(address, agentKey, named, expiresAt, now);
     const link: LinkChallengeData = {
       state: 'link_sent',
       ...named,
-      token_hashes: [first],
-      done_hash: hashToken(this.doneCredential(first)),
+      token_hashes: [],
+      done_hash: '',
       resend_at: now + this.config.resend_interval_seconds * 1000,
     };
 
@@ -223,6 +222,13 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
         metadata: { ...linkMetadata(link), link },
       },
     ];
+  }
+
+  async sendFirst(agentKey: string, email: string, cs: Pick<ChallengeState, 'link' | 'expires_at'>): Promise<void> {
+    const link = cs.link!;
+    const first = await this.sendLink(email.trim(), agentKey, link, cs.expires_at, Date.now());
+    link.token_hashes = [first];
+    link.done_hash = hashToken(this.doneCredential(first));
   }
 
   async verifyChallengeResponse(): Promise<{ passed: boolean; reason?: string }> {

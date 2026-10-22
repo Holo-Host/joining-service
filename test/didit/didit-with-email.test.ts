@@ -4,7 +4,7 @@ import { HcAuthClient } from '../../src/hc-auth/client.js';
 import { subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
-import { NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
+import { DiditWithEmailAuthMethod, NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
 import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
 import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
@@ -181,6 +181,25 @@ describe('didit_with_email join', () => {
     expect(emails).toHaveLength(0);
   });
 
+  it('sends no email, and counts none toward its limits, for a join another method refuses or another method already meets its group, and keeps the invite code of a join whose email fails', async () => {
+    const { request, emails } = await diditApp({ auth_methods: ['didit_with_email', 'invite_code'], invite_codes: ['GOOD'] });
+    captureLogs();
+    const agent = await signingAgent();
+    const join = (invite_code: string) => signedJoin(request, agent, EMAIL, { claims: { email: EMAIL, invite_code } });
+
+    expect((await join('BAD')).status).toBe(403);
+    vi.spyOn(FileTransport.prototype, 'send').mockRejectedValueOnce(new Error('mail down'));
+    expect((await join('GOOD')).status).toBe(503);
+    expect(emails).toHaveLength(0);
+    expect((await join('GOOD')).status).toBe(201);
+    expect(emails).toHaveLength(1);
+
+    const grouped = await diditApp({ auth_methods: [{ any_of: ['didit_with_email', 'invite_code'] }], invite_codes: ['GOOD'] });
+    const admitted = await signedJoin(grouped.request, await signingAgent(), EMAIL, { claims: { email: EMAIL, invite_code: 'GOOD' } });
+    expect((await admitted.json()).status).toBe('ready');
+    expect(grouped.emails).toHaveLength(0);
+  });
+
   it('refuses an unsigned join with an email, and keeps unsigned joins without one and partner-verified joins as they were, even over a pending link session', async () => {
     resetRateLimitState();
     const { request, ctx, emails } = await diditApp({
@@ -309,7 +328,7 @@ describe('didit_with_email join', () => {
     expect((await signedJoin(request, agent, EMAIL)).status).toBe(201);
   });
 
-  it('answers a bad email, an email limit or a mail failure inside an any_of group, unless another method admits the agent', async () => {
+  it('answers a bad email, an email limit or a mail failure inside an any_of group, unless another method admits the agent, and lets an unexpected error through even then', async () => {
     const { request, ctx } = await diditApp({ auth_methods: [{ any_of: ['agent_allow_list', 'didit_with_email'] }] });
     captureLogs();
     const bad = await signedJoin(request, await signingAgent(), 'ada');
@@ -328,6 +347,8 @@ describe('didit_with_email join', () => {
 
     const listed = await signingAgent();
     await ctx.allowedAgentStore!.put({ agent_key: listed.agentKey, registered_at: new Date().toISOString() });
+    vi.spyOn(DiditWithEmailAuthMethod.prototype, 'sendFirst').mockRejectedValueOnce(new TypeError('a bug'));
+    expect((await signedJoin(request, listed, EMAIL)).status).toBe(500);
     const admitted = await signedJoin(request, listed, EMAIL);
     expect(admitted.status).toBe(201);
     expect((await admitted.json()).challenges.map((c: { type: string }) => c.type)).toEqual(['agent_allow_list']);

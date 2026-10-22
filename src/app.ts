@@ -9,6 +9,7 @@ import {
   pollIntervalMs,
   takeLink,
 } from './auth-methods/didit-with-email.js';
+import { InviteCodeAuthMethod } from './auth-methods/invite-code.js';
 import { createDiditRoutes } from './routes/didit-links.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
@@ -226,6 +227,27 @@ function usedHcAuthApproval(challenges: ChallengeState[]): boolean {
 function diditMethod(ctx: ServiceContext): DiditWithEmailAuthMethod | undefined {
   const plugin = ctx.authPlugins.get('didit_with_email');
   return plugin instanceof DiditWithEmailAuthMethod ? plugin : undefined;
+}
+
+async function sendLinks(
+  didit: DiditWithEmailAuthMethod | undefined,
+  agentKey: string,
+  claims: Record<string, string>,
+  challenges: ChallengeState[],
+): Promise<void> {
+  for (const cs of challenges.filter((c) => c.link)) {
+    const others = cs.group ? challenges.filter((o) => o !== cs && o.group === cs.group) : [];
+    if (!others.some((o) => o.completed)) {
+      try {
+        await didit!.sendFirst(agentKey, claims.email, cs);
+        continue;
+      } catch (e) {
+        if (!(e instanceof JoinRequestError) || others.length === 0) throw e;
+        console.warn(`[didit_with_email] link not sent (${e.code}), so the join goes on with the rest of its any_of group`);
+      }
+    }
+    challenges.splice(challenges.indexOf(cs), 1);
+  }
 }
 
 /**
@@ -846,6 +868,17 @@ export function createApp(ctx: ServiceContext): Hono {
           }
         }
       }
+    }
+
+    // After every other method and the invite check, so a refused join sends no email.
+    try {
+      await sendLinks(didit, agent_key, claims, allChallenges);
+    } catch (e) {
+      const invite = ctx.authPlugins.get('invite_code');
+      if (invite instanceof InviteCodeAuthMethod && allChallenges.some((cs) => cs.challenge.type === 'invite_code' && cs.completed)) {
+        invite.restore(claims.invite_code);
+      }
+      throw e;
     }
 
     const finalStatus = allSatisfied(allChallenges) ? 'ready' : status;

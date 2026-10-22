@@ -304,9 +304,11 @@ The client sends its agent key and optional identity claims. The server determin
 | 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
 | 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join to replace the session. |
 | 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
-| 503 | `service_unavailable` | The `didit_with_email` email could not be sent, or a required hc-auth step failed. Nothing was created. |
+| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth step failed. Nothing was created. |
 
-A join that is refused before it writes its own session leaves a pending `didit_with_email` session and its links working.
+A join refused at its `didit_with_email` email leaves its invite code unused.
+
+A refused join leaves a pending `didit_with_email` session and its links working.
 
 An agent key can hold at most one live session per network: joining is scoped to the agent-key-plus-network pair (an omitted `network`, and the statically configured network's own happ id, are the same scope -- see Section 3.2). An agent that already joined one network may join a different network -- that second join is a separate session with its own roles at provision time. Re-joining a network the agent already has a live session on gets `409 agent_already_joined`; there is no re-join within the same network. `POST /v1/reconnect` (Section 3.6) refreshes linker/gateway URLs for an agent with any ready session, regardless of which network it named, and separately returns a network-scoped `session` token when the requested network has a ready session -- that token is for the same `GET /v1/join/{session}/provision` (Section 3.5) call the original join would have used, which is how an agent that crashed between receiving its session token and provisioning recovers without a second join.
 
@@ -1234,7 +1236,7 @@ Can be combined in OR groups:
 
 ### Didit With Email
 
-The `didit_with_email` method verifies an identity with Didit, started from a link emailed to `claims.email`. The join must be signed (Section 3.2). The email carries a link to the pages of Section 3.18, and nothing reaches Didit until the person presses Continue there. The client polls `GET /v1/join/{session}/status` until Didit approves.
+The `didit_with_email` method verifies an identity with Didit, started from a link emailed to `claims.email`. The join must be signed (Section 3.2). The email carries a link to the pages of Section 3.18, and nothing reaches Didit until the person presses Continue there. The email goes out only once every other method has admitted the agent, so a join refused for another reason sends nothing and counts toward no email limit. It does not go out when another challenge in its `any_of` group is already complete, such as a valid invite code. The client polls `GET /v1/join/{session}/status` until Didit approves.
 
 Challenge sent to client. `group` is present only in an `any_of` group, and status and resume add `completed`:
 ```json
