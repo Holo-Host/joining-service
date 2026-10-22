@@ -12,6 +12,7 @@ import {
 import {
   DiditUnavailableError,
   isConfigField,
+  keyedHash,
   stateOf,
   subjectId,
   type DecisionField,
@@ -77,6 +78,11 @@ export type ContinueOutcome =
   | { kind: 'in_review' }
   | { kind: 'rejected' }
   | { kind: 'unavailable' };
+
+interface FoundLink {
+  session: SessionData;
+  cs: ChallengeState;
+}
 
 type Reading = 'approved' | 'in_review' | 'open' | 'over' | 'gone' | 'unknown';
 
@@ -197,14 +203,18 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     const now = Date.now();
     const network = joinContext?.network;
     const expiresAt = now + this.config.link_ttl_seconds * 1000;
-    const link: LinkChallengeData = {
-      state: 'link_sent',
+    const named = {
       subject_id: subjectId(address, this.config.subject_key),
       network_name: network ? (network.happ?.name ?? network.happ_id) : this.happName,
-      token_hashes: [],
+    };
+    const first = await this.sendLink(address, agentKey, named, expiresAt, now);
+    const link: LinkChallengeData = {
+      state: 'link_sent',
+      ...named,
+      token_hashes: [first],
+      done_hash: hashToken(this.doneCredential(first)),
       resend_at: now + this.config.resend_interval_seconds * 1000,
     };
-    link.token_hashes.push(await this.sendLink(address, agentKey, link, expiresAt, now));
 
     return [
       {
@@ -221,12 +231,15 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     return { passed: false, reason: 'Open the link in the email to continue' };
   }
 
-  async findLink(token: string): Promise<{ session: SessionData; cs: ChallengeState } | undefined> {
-    if (!TOKEN_RE.test(token)) return undefined;
-    const hash = hashToken(token);
-    const session = await this.store.findByLinkToken(hash);
-    const cs = session?.challenges.find((c) => c.link?.token_hashes.includes(hash));
-    return session && cs && Date.now() <= cs.expires_at ? { session, cs } : undefined;
+  /** The pending join an emailed link token belongs to. */
+  async findLink(token: string): Promise<FoundLink | undefined> {
+    const found = await this.findByHash(token, (link, hash) => link.token_hashes.includes(hash));
+    return found?.session.status === 'pending' ? found : undefined;
+  }
+
+  /** The join a done page credential belongs to, in any status. */
+  findDone(credential: string): Promise<FoundLink | undefined> {
+    return this.findByHash(credential, (link, hash) => link.done_hash === hash);
   }
 
   async resend(session: SessionData, cs: ChallengeState): Promise<void> {
@@ -262,12 +275,12 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
    * The Continue button: completes from a decision, opens a Didit session for
    * the browser, or rejects the join when the email has no attempts left.
    */
-  async continue(session: SessionData, cs: ChallengeState, token: string): Promise<ContinueOutcome> {
+  async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     if (cs.completed) return { kind: 'approved' };
     const key = `didit_continue:${session.id}:${cs.challenge.id}`;
     if (!(await this.allow(key, CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) return { kind: 'unavailable' };
     try {
-      return (await this.continueRecorded(session, cs, token)) ?? (await this.continueListed(session, cs, token));
+      return (await this.continueRecorded(session, cs)) ?? (await this.continueListed(session, cs));
     } catch (err) {
       if (!(err instanceof DiditUnavailableError)) throw err;
       console.warn(`[didit_with_email] ${err.message}; Continue changed nothing`);
@@ -275,11 +288,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     }
   }
 
-  private async continueRecorded(
-    session: SessionData,
-    cs: ChallengeState,
-    token: string,
-  ): Promise<ContinueOutcome | undefined> {
+  private async continueRecorded(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome | undefined> {
     const attempt = cs.link!.attempt;
     if (!attempt || attempt.gone) return undefined;
     const reading = this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
@@ -287,10 +296,10 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       await this.save(session);
       return { kind: reading };
     }
-    return reading === 'open' ? this.open(session, cs, token) : undefined;
+    return reading === 'open' ? this.open(session, cs) : undefined;
   }
 
-  private async continueListed(session: SessionData, cs: ChallengeState, token: string): Promise<ContinueOutcome> {
+  private async continueListed(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     const link = cs.link!;
     const listed = await this.client.listSessions(link.subject_id);
     const ranked: { session_id: string; rank: number }[] = [];
@@ -316,7 +325,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       }
       const field = this.mismatch(decision, link, session.agent_key);
       if (state === 'in_progress' && (!field || field === 'metadata.agent_key')) {
-        return this.open(session, cs, token);
+        return this.open(session, cs);
       }
       if (field) console.warn(`[didit_with_email] listed session ${row.session_id} is not this join's: ${field} differs`);
       if (field || (state !== 'approved' && state !== 'in_review')) continue;
@@ -351,15 +360,15 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       });
       return { kind: 'rejected' };
     }
-    return this.open(session, cs, token);
+    return this.open(session, cs);
   }
 
   /** Creates a session, or takes over the email's open one, and records it on the challenge. */
-  private async open(session: SessionData, cs: ChallengeState, token: string): Promise<ContinueOutcome> {
+  private async open(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     const link = cs.link!;
     const created = await this.client.createSession({
       vendorData: link.subject_id,
-      callback: `${this.linkUrl(token)}/done`,
+      callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
       agentKey: session.agent_key,
     });
     const now = Date.now();
@@ -438,7 +447,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   private async sendLink(
     email: string,
     agentKey: string,
-    link: LinkChallengeData,
+    link: Pick<LinkChallengeData, 'subject_id' | 'network_name'>,
     expiresAt: number,
     now: number,
   ): Promise<string> {
@@ -458,7 +467,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     const token = randomBytes(32).toString('base64url');
     const values = {
       network: link.network_name,
-      link: this.linkUrl(token),
+      link: `${this.baseUrl}/v1/didit/${token}`,
       expires_at: formatUtc(expiresAt),
       agent_key: shortAgentKey(agentKey),
     };
@@ -504,8 +513,20 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     return wait <= 0;
   }
 
-  private linkUrl(token: string): string {
-    return `${this.baseUrl}/v1/didit/${token}`;
+  private async findByHash(
+    secret: string,
+    holds: (link: LinkChallengeData, hash: string) => boolean,
+  ): Promise<FoundLink | undefined> {
+    if (!TOKEN_RE.test(secret)) return undefined;
+    const hash = hashToken(secret);
+    const session = await this.store.findByLinkHash(hash);
+    const cs = session?.challenges.find((c) => c.link && holds(c.link, hash));
+    return session && cs && Date.now() <= cs.expires_at ? { session, cs } : undefined;
+  }
+
+  /** Keyed, so a reader of the store cannot make it, and one-way, so it does not give back the link token. */
+  private doneCredential(firstTokenHash: string): string {
+    return keyedHash(`done\0${firstTokenHash}`, this.config.subject_key).toString('base64url');
   }
 
   private async save(session: SessionData): Promise<void> {

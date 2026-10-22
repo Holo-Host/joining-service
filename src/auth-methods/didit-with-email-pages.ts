@@ -74,7 +74,7 @@ export function landingPage(request: {
   return page(paragraphs, 200, '<form method="post"><button type="submit">Continue</button></form>');
 }
 
-/** `GET /v1/didit/{token}/done`: where the verification stands. */
+/** `GET /v1/didit/done/{credential}`: where the verification stands. */
 export function donePage(state: DiditWithEmailState): Response {
   if (state === 'approved') return messagePage(TEXT.approved);
   if (state === 'in_review') return messagePage(TEXT.inReview);

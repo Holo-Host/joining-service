@@ -4,6 +4,7 @@ import { HcAuthClient } from '../../src/hc-auth/client.js';
 import { subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
+import { NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
 import { createTestApp, fakeDnaHash } from '../helpers.js';
 import { agentPubKeyFrom32, decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
@@ -95,6 +96,11 @@ function partnerJoin(request: Request, agentKey: string, extra: Record<string, u
       ...extra,
     }),
   });
+}
+
+/** The done page path Didit was given. */
+function donePath(didit: FakeDidit): string {
+  return new URL(didit.calls('create')[0].body!.callback as string).pathname;
 }
 
 /** Moves the clock forward, by default past the longest read interval. */
@@ -408,8 +414,9 @@ describe('GET /v1/didit/{token}', () => {
   it('answers a page, not JSON, when the store fails', async () => {
     const { request, ctx, token } = await joinedApp();
     captureLogs();
-    vi.spyOn(ctx.sessionStore as LinkSessionStore, 'findByLinkToken').mockRejectedValue(new Error('KV down'));
-    for (const res of [await request(`/v1/didit/${token}`), await pressContinue(request, token), await request(`/v1/didit/${token}/done`)]) {
+    vi.spyOn(ctx.sessionStore as LinkSessionStore, 'findByLinkHash').mockRejectedValue(new Error('KV down'));
+    const done = `/v1/didit/done/${'d'.repeat(43)}`;
+    for (const res of [await request(`/v1/didit/${token}`), await pressContinue(request, token), await request(done)]) {
       expect(res.status).toBe(503);
       expect(res.headers.get('Content-Type')).toContain('text/html');
       expect(await res.text()).toContain('Identity verification is not available right now.');
@@ -418,7 +425,7 @@ describe('GET /v1/didit/{token}', () => {
 });
 
 describe('POST /v1/didit/{token}', () => {
-  it('creates a session for the subject id and agent key, with the done callback, and answers 303 to it', async () => {
+  it('creates a session for the subject id and agent key, with a done callback that cannot Continue, and answers 303 to it', async () => {
     const { request, ctx, didit, agent, session, token } = await joinedApp();
 
     const res = await pressContinue(request, token);
@@ -430,10 +437,17 @@ describe('POST /v1/didit/{token}', () => {
     expect(create.body).toEqual({
       workflow_id: WORKFLOW_ID,
       vendor_data: SUBJECT,
-      callback: `${BASE_URL}/v1/didit/${token}/done`,
+      callback: expect.stringMatching(/\/v1\/didit\/done\/[A-Za-z0-9_-]{43}$/),
       callback_method: 'both',
       metadata: { agent_key: agent.agentKey },
     });
+    expect(create.body!.callback).toBe(`${BASE_URL}${donePath(didit)}`);
+    expect(create.body!.callback).not.toContain(token);
+    const credential = donePath(didit).split('/').pop()!;
+    for (const res of [await request(`/v1/didit/${credential}`), await pressContinue(request, credential), await request(`/v1/didit/${token}/done`)]) {
+      expect(res.status).toBe(404);
+    }
+    expect(didit.calls('create')).toHaveLength(1);
     const stored = JSON.stringify(await ctx.sessionStore.get(session));
     expect(stored).not.toContain('SESSION-URL');
     expect(stored).not.toContain('SESSION-TOKEN');
@@ -813,15 +827,17 @@ describe('POST /v1/join/resume for a didit_with_email join', () => {
   });
 });
 
-describe('GET /v1/didit/{token}/done', () => {
+describe('GET /v1/didit/done/{credential}', () => {
   it.each([
     ['In Progress', 'Your verification is still in progress. Go back to the app. It continues by itself.', 'pending'],
     ['In Review', 'Your verification is in review. After the review, the app continues by itself.', 'pending'],
     ['Declined', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
     ['Expired', 'Your verification did not pass. To try again, open the link in your email again.', 'pending'],
     [undefined, 'We could not find your verification. To start again, open the link in your email and press Continue.', 'pending'],
+    ['Approved', VERIFIED, 'pending'],
     ['Approved', VERIFIED, 'ready'],
-  ])('shows where a %s verification stands, whatever the query says', async (didStatus, text, joinStatus) => {
+    ['In Progress', NO_ATTEMPTS_LEFT, 'rejected'],
+  ])('shows where a %s verification stands in a %s join, whatever the query says', async (didStatus, text, joinStatus) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
     const { request, ctx, didit, session, token } = await joinedApp();
@@ -829,11 +845,18 @@ describe('GET /v1/didit/{token}/done', () => {
     if (didStatus) didit.sessions[0].status = didStatus;
     else didit.sessions.splice(0, 1);
     later();
+    if (joinStatus === 'ready') expect((await status(request, session)).status).toBe('ready');
+    if (joinStatus === 'rejected') await ctx.sessionStore.update(session, { status: 'rejected', reason: NO_ATTEMPTS_LEFT });
     const query = didStatus === 'Approved' ? 'status=Declined' : 'verificationSessionId=forged&status=Approved';
-    const res = await request(`/v1/didit/${token}/done?${query}`);
-    expect(res.status).toBe(200);
+    const res = await request(`${donePath(didit)}?${query}`);
+    expect(res.status).toBe(joinStatus === 'rejected' ? 403 : 200);
     expect(await res.text()).toContain(text);
     expect((await ctx.sessionStore.get(session))!.status).toBe(joinStatus);
+    if (joinStatus !== 'pending') {
+      expect((await request(`/v1/didit/${token}`)).status).toBe(404);
+      later(604_800_000);
+      expect((await request(donePath(didit))).status).toBe(404);
+    }
   });
 });
 
@@ -894,7 +917,7 @@ describe('didit_with_email leaks nothing', () => {
     await keep(await request(`/v1/join/${session}/status`));
     didit.sessions[0].status = 'In Review';
     later();
-    await keep(await request(`/v1/didit/${token}/done`));
+    await keep(await request(donePath(didit)));
     await keep(await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign()) }));
     await keep(await postJson(request, `/v1/join/${session}/resend`, { challenge_id: 'none' }));
     didit.sessions[0].metadata = { agent_key: 'uhCAkOther' };
@@ -905,14 +928,15 @@ describe('didit_with_email leaks nothing', () => {
 
     const stored = (await ctx.sessionStore.get(session))!;
     const link = stored.challenges.find((cs) => cs.link)!.link!;
-    const secrets = [token, ...link.token_hashes, didit.sessions[0].session_id, SUBJECT];
+    const credential = donePath(didit).split('/').pop()!;
+    const secrets = [token, ...link.token_hashes, credential, link.done_hash, didit.sessions[0].session_id, SUBJECT];
     for (const body of bodies) {
       for (const secret of secrets) expect(body).not.toContain(secret);
     }
 
     const logged = lines.join('\n');
     expect(lines.length).toBeGreaterThan(0);
-    for (const secret of ['SESSION-URL', 'SESSION-TOKEN', 'didit-test-key', 'Ada Lovelace', token, SUBJECT]) {
+    for (const secret of ['SESSION-URL', 'SESSION-TOKEN', 'didit-test-key', 'Ada Lovelace', token, credential, SUBJECT]) {
       expect(logged).not.toContain(secret);
     }
   });

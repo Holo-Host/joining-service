@@ -46,12 +46,11 @@ export function createDiditRoutes(
 
   // ---- POST /v1/didit/:token ----
   app.post('/v1/didit/:token', page(async (c) => {
-    const token = c.req.param('token');
-    const found = await method.findLink(token);
+    const found = await method.findLink(c.req.param('token'));
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
 
-    const outcome = await method.continue(session, cs, token);
+    const outcome = await method.continue(session, cs);
     switch (outcome.kind) {
       case 'redirect':
         return redirectTo(outcome.url);
@@ -67,13 +66,13 @@ export function createDiditRoutes(
     }
   }));
 
-  // ---- GET /v1/didit/:token/done ----
-  app.get('/v1/didit/:token/done', page(async (c) => {
-    const found = await method.findLink(c.req.param('token'));
+  // ---- GET /v1/didit/done/:credential ----
+  app.get('/v1/didit/done/:credential', page(async (c) => {
+    const found = await method.findDone(c.req.param('credential'));
     if (!found) return messagePage(TEXT.invalid, 404);
     const { session, cs } = found;
-    await method.refresh(session);
-    if (cs.completed) await hooks.finishJoin(session);
+    if (session.status === 'rejected') return messagePage(session.reason ?? TEXT.rejected, 403);
+    if (session.status === 'pending') await method.refresh(session);
     return donePage(cs.link!.state);
   }));
 

@@ -2,8 +2,8 @@
  * SessionStore backed by Cloudflare Workers KV.
  *
  * Each session is stored as a JSON value keyed by session ID. Index keys
- * map agent_key and each emailed link token to a session ID. Each event of
- * the email limits is a key of its own, so concurrent writers add keys
+ * map agent_key, each link token hash and each done hash to a session ID.
+ * Each limit event is a key of its own, so concurrent writers add keys
  * rather than overwrite one value.
  *
  * TTL is handled by KV's built-in expiration. A session holding a link
@@ -12,7 +12,7 @@
  */
 
 import type { LinkSessionStore, SessionData } from './store.js';
-import { applyUpdate, holdsLink, isExpired, linkTokenHashes, ownsLinkToken, pendingExpiresAt } from './store.js';
+import { applyUpdate, holdsLink, isExpired, linkHashes, holdsLinkHash, pendingExpiresAt } from './store.js';
 
 /** Cloudflare KV namespace binding (subset of the runtime type). */
 interface KVNamespace {
@@ -29,7 +29,7 @@ interface KvPutOptions {
 
 const SESSION_PREFIX = 'session:';
 const AGENT_INDEX_PREFIX = 'agent:';
-const LINK_TOKEN_PREFIX = 'link:';
+const LINK_HASH_PREFIX = 'link:';
 const EVENT_PREFIX = 'event:';
 
 /** KV refuses an expiration less than 60 seconds ahead. */
@@ -77,7 +77,7 @@ export class KvSessionStore implements LinkSessionStore {
       data.id,
       opts,
     );
-    await this.indexLinkTokens(data, linkTokenHashes(data), opts);
+    await this.indexLinkHashes(data, linkHashes(data), opts);
   }
 
   async get(sessionId: string): Promise<SessionData | null> {
@@ -110,10 +110,10 @@ export class KvSessionStore implements LinkSessionStore {
       );
     }
 
-    const known = new Set(linkTokenHashes(existing));
-    await this.indexLinkTokens(
+    const known = new Set(linkHashes(existing));
+    await this.indexLinkHashes(
       updated,
-      linkTokenHashes(updated).filter((hash) => !known.has(hash)),
+      linkHashes(updated).filter((hash) => !known.has(hash)),
       opts,
     );
   }
@@ -122,8 +122,8 @@ export class KvSessionStore implements LinkSessionStore {
     const existing = await this.get(sessionId);
     if (existing) {
       await this.kv.delete(agentIndexKey(existing.agent_key, existing.network));
-      for (const hash of linkTokenHashes(existing)) {
-        await this.kv.delete(LINK_TOKEN_PREFIX + hash);
+      for (const hash of linkHashes(existing)) {
+        await this.kv.delete(LINK_HASH_PREFIX + hash);
       }
     }
     await this.kv.delete(SESSION_PREFIX + sessionId);
@@ -162,10 +162,10 @@ export class KvSessionStore implements LinkSessionStore {
     return best;
   }
 
-  async findByLinkToken(tokenHash: string): Promise<SessionData | null> {
-    const sessionId = await this.kv.get(LINK_TOKEN_PREFIX + tokenHash);
+  async findByLinkHash(hash: string): Promise<SessionData | null> {
+    const sessionId = await this.kv.get(LINK_HASH_PREFIX + hash);
     const session = sessionId ? await this.get(sessionId) : null;
-    return ownsLinkToken(session, tokenHash) ? session : null;
+    return holdsLinkHash(session, hash) ? session : null;
   }
 
   /** Records before it counts: counting first would miss a reservation made at the same moment. */
@@ -198,9 +198,9 @@ export class KvSessionStore implements LinkSessionStore {
       .sort((a, b) => a - b);
   }
 
-  private async indexLinkTokens(session: SessionData, hashes: string[], opts: KvPutOptions): Promise<void> {
+  private async indexLinkHashes(session: SessionData, hashes: string[], opts: KvPutOptions): Promise<void> {
     for (const hash of hashes) {
-      await this.kv.put(LINK_TOKEN_PREFIX + hash, session.id, opts);
+      await this.kv.put(LINK_HASH_PREFIX + hash, session.id, opts);
     }
   }
 

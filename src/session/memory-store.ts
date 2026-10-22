@@ -1,5 +1,5 @@
 import type { LinkSessionStore, SessionData } from './store.js';
-import { applyUpdate, isExpired, linkTokenHashes, ownsLinkToken, withoutOne } from './store.js';
+import { applyUpdate, isExpired, linkHashes, holdsLinkHash, withoutOne } from './store.js';
 
 /** Composite agent-index key: session uniqueness is per (agent, network). */
 function agentIndexKey(agentKey: string, network?: string): string {
@@ -20,7 +20,7 @@ export class MemorySessionStore implements LinkSessionStore {
   async create(data: SessionData): Promise<void> {
     this.sessions.set(data.id, { ...data });
     this.agentIndex.set(agentIndexKey(data.agent_key, data.network), data.id);
-    this.indexLinkTokens(data);
+    this.indexLinkHashes(data);
   }
 
   async get(sessionId: string): Promise<SessionData | null> {
@@ -41,7 +41,7 @@ export class MemorySessionStore implements LinkSessionStore {
     if (!existing) return;
     const updated = applyUpdate(existing, data);
     this.sessions.set(sessionId, updated);
-    this.indexLinkTokens(updated);
+    this.indexLinkHashes(updated);
   }
 
   async delete(sessionId: string): Promise<void> {
@@ -79,10 +79,10 @@ export class MemorySessionStore implements LinkSessionStore {
     return best;
   }
 
-  async findByLinkToken(tokenHash: string): Promise<SessionData | null> {
-    const sessionId = this.linkIndex.get(tokenHash);
+  async findByLinkHash(hash: string): Promise<SessionData | null> {
+    const sessionId = this.linkIndex.get(hash);
     const session = sessionId ? await this.get(sessionId) : null;
-    return ownsLinkToken(session, tokenHash) ? session : null;
+    return holdsLinkHash(session, hash) ? session : null;
   }
 
   async reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number> {
@@ -101,13 +101,13 @@ export class MemorySessionStore implements LinkSessionStore {
     }
   }
 
-  private indexLinkTokens(session: SessionData): void {
-    for (const hash of linkTokenHashes(session)) this.linkIndex.set(hash, session.id);
+  private indexLinkHashes(session: SessionData): void {
+    for (const hash of linkHashes(session)) this.linkIndex.set(hash, session.id);
   }
 
   private remove(session: SessionData): void {
     this.sessions.delete(session.id);
     this.agentIndex.delete(agentIndexKey(session.agent_key, session.network));
-    for (const hash of linkTokenHashes(session)) this.linkIndex.delete(hash);
+    for (const hash of linkHashes(session)) this.linkIndex.delete(hash);
   }
 }

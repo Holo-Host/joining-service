@@ -47,6 +47,8 @@ export interface LinkChallengeData {
   network_name: string;
   /** SHA-256 of every link token emailed for this challenge. */
   token_hashes: string[];
+  /** SHA-256 of the done page's credential. */
+  done_hash: string;
   /** Earliest time a resend can succeed. */
   resend_at: number;
   attempt?: DiditAttempt;
@@ -75,8 +77,8 @@ export interface SessionStore {
 
 /** What `didit_with_email` needs from a session store, beyond SessionStore. */
 export interface LinkSessionStore extends SessionStore {
-  /** The pending session that emailed this link token, until that session ends. */
-  findByLinkToken(tokenHash: string): Promise<SessionData | null>;
+  /** The session holding this link token hash or done hash, in any status, until it expires or is deleted. */
+  findByLinkHash(hash: string): Promise<SessionData | null>;
   /**
    * Gives `wait` each key's events within `ttlMs`, oldest first, and records
    * an event at `at` under every key unless `wait` returns a positive delay.
@@ -90,7 +92,7 @@ export interface LinkSessionStore extends SessionStore {
 }
 
 export function isLinkSessionStore(store: SessionStore): store is LinkSessionStore {
-  return 'findByLinkToken' in store && 'reserveEvents' in store && 'removeEvents' in store;
+  return 'findByLinkHash' in store && 'reserveEvents' in store && 'removeEvents' in store;
 }
 
 /**
@@ -110,12 +112,12 @@ export function holdsLink(session: SessionData): boolean {
   return session.challenges.some((cs) => cs.link);
 }
 
-export function linkTokenHashes(session: SessionData): string[] {
-  return session.challenges.flatMap((cs) => cs.link?.token_hashes ?? []);
+export function linkHashes(session: SessionData): string[] {
+  return session.challenges.flatMap((cs) => (cs.link ? [...cs.link.token_hashes, cs.link.done_hash] : []));
 }
 
-export function ownsLinkToken(session: SessionData | null, tokenHash: string): session is SessionData {
-  return session?.status === 'pending' && linkTokenHashes(session).includes(tokenHash);
+export function holdsLinkHash(session: SessionData | null, hash: string): session is SessionData {
+  return session !== null && linkHashes(session).includes(hash);
 }
 
 export function withoutOne(times: number[], at: number): number[] {

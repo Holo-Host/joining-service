@@ -31,7 +31,7 @@ function linkChallenge(overrides: Partial<ChallengeState> = {}, link: Partial<Ch
     completed: false,
     attempts: 0,
     expires_at: LINK_EXPIRES,
-    link: { state: 'link_sent', subject_id: 'subject', network_name: 'Test App', token_hashes: ['hash_1'], resend_at: NOW + 60_000, ...link },
+    link: { state: 'link_sent', subject_id: 'subject', network_name: 'Test App', token_hashes: ['hash_1'], done_hash: 'done_1', resend_at: NOW + 60_000, ...link },
     ...overrides,
   };
 }
@@ -128,28 +128,29 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
   });
 
   describe('link tokens', () => {
-    it('finds a pending session by each token hash, including one added by an update', async () => {
+    it('finds a session by its done hash and each token hash, including one added by an update', async () => {
       await store.create(session());
       await store.update('js_link', {
         challenges: [linkChallenge({}, { token_hashes: ['hash_1', 'hash_2'] })],
       });
-      expect((await store.findByLinkToken('hash_2'))?.id).toBe('js_link');
-      expect((await store.findByLinkToken('hash_1'))?.id).toBe('js_link');
-      expect(await store.findByLinkToken('hash_unknown')).toBeNull();
+      expect((await store.findByLinkHash('hash_2'))?.id).toBe('js_link');
+      expect((await store.findByLinkHash('hash_1'))?.id).toBe('js_link');
+      expect((await store.findByLinkHash('done_1'))?.id).toBe('js_link');
+      expect(await store.findByLinkHash('hash_unknown')).toBeNull();
     });
 
-    it('finds nothing once the session is ready, deleted or expired', async () => {
+    it('finds a ready session, and nothing once the session is deleted or expired', async () => {
       await store.create(session());
       await store.update('js_link', { status: 'ready' });
-      expect(await store.findByLinkToken('hash_1')).toBeNull();
+      expect((await store.findByLinkHash('hash_1'))?.status).toBe('ready');
 
       await store.create(session({ id: 'js_deleted', challenges: [linkChallenge({}, { token_hashes: ['hash_d'] })] }));
       await store.delete('js_deleted');
-      expect(await store.findByLinkToken('hash_d')).toBeNull();
+      expect(await store.findByLinkHash('hash_d')).toBeNull();
 
       await store.create(session({ id: 'js_expired', challenges: [linkChallenge({}, { token_hashes: ['hash_e'] })] }));
       vi.setSystemTime(LINK_EXPIRES + 1);
-      expect(await store.findByLinkToken('hash_e')).toBeNull();
+      expect(await store.findByLinkHash('hash_e')).toBeNull();
     });
   });
 
@@ -211,7 +212,7 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
       await store.update('js_link', { challenges: [written] });
       const [cs] = (await store.get('js_link'))!.challenges;
       expect(cs).toMatchObject(expected);
-      for (const hash of cs.link?.token_hashes ?? []) expect((await store.findByLinkToken(hash))?.id).toBe('js_link');
+      for (const hash of cs.link?.token_hashes ?? []) expect((await store.findByLinkHash(hash))?.id).toBe('js_link');
     });
   });
 
@@ -303,13 +304,13 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     await store.create(session());
     vi.setSystemTime(NOW + 2 * TTL_MS);
     store.cleanup();
-    expect(await store.findByLinkToken('hash_1')).not.toBeNull();
+    expect(await store.findByLinkHash('hash_1')).not.toBeNull();
 
     vi.setSystemTime(LINK_EXPIRES + 1);
     store.cleanup();
     vi.setSystemTime(NOW);
     expect(await store.get('js_link')).toBeNull();
-    expect(await store.findByLinkToken('hash_1')).toBeNull();
+    expect(await store.findByLinkHash('hash_1')).toBeNull();
     store.close();
   });
 

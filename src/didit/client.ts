@@ -66,7 +66,11 @@ export function resolveDiditConfig(raw: Partial<DiditConfig> | undefined): Resol
  */
 export function subjectId(email: string, subjectKeyHex: string): string {
   const normalized = email.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
-  return createHmac('sha256', Buffer.from(subjectKeyHex, 'hex')).update(normalized).digest('hex');
+  return keyedHash(normalized, subjectKeyHex).toString('hex');
+}
+
+export function keyedHash(data: string, keyHex: string): Buffer {
+  return createHmac('sha256', Buffer.from(keyHex, 'hex')).update(data).digest();
 }
 
 const STATES = new Map<string, Exclude<DiditWithEmailState, 'link_sent'>>([

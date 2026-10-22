@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { SessionData, LinkSessionStore, ChallengeState } from './store.js';
-import { applyUpdate, isExpired, linkTokenHashes, ownsLinkToken } from './store.js';
+import { applyUpdate, isExpired, linkHashes, holdsLinkHash } from './store.js';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS sessions (
@@ -126,7 +126,7 @@ export class SqliteSessionStore implements LinkSessionStore {
       reason: data.reason ?? null,
       network: data.network ?? null,
     });
-    this.indexLinkTokens(data);
+    this.indexLinkHashes(data);
   }
 
   async get(sessionId: string): Promise<SessionData | null> {
@@ -159,7 +159,7 @@ export class SqliteSessionStore implements LinkSessionStore {
       challenges: JSON.stringify(updated.challenges),
       reason: data.reason ?? existing.reason ?? null,
     });
-    this.indexLinkTokens(updated);
+    this.indexLinkHashes(updated);
   }
 
   async delete(sessionId: string): Promise<void> {
@@ -186,10 +186,10 @@ export class SqliteSessionStore implements LinkSessionStore {
     return rowToSession(row);
   }
 
-  async findByLinkToken(tokenHash: string): Promise<SessionData | null> {
-    const row = this.stmtFindLinkToken.get(tokenHash) as { session_id: string } | undefined;
+  async findByLinkHash(hash: string): Promise<SessionData | null> {
+    const row = this.stmtFindLinkToken.get(hash) as { session_id: string } | undefined;
     const session = row ? await this.get(row.session_id) : null;
-    return ownsLinkToken(session, tokenHash) ? session : null;
+    return holdsLinkHash(session, hash) ? session : null;
   }
 
   async reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number> {
@@ -224,8 +224,8 @@ export class SqliteSessionStore implements LinkSessionStore {
     this.db.close();
   }
 
-  private indexLinkTokens(session: SessionData): void {
-    for (const hash of linkTokenHashes(session)) this.stmtInsertLinkToken.run(hash, session.id);
+  private indexLinkHashes(session: SessionData): void {
+    for (const hash of linkHashes(session)) this.stmtInsertLinkToken.run(hash, session.id);
   }
 
   private remove(sessionId: string): void {
