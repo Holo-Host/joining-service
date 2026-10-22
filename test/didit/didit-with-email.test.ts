@@ -520,13 +520,25 @@ describe('POST /v1/didit/{token}', () => {
     expect(await ctx.sessionStore.get(session)).toEqual(before);
   });
 
-  it('sends a second Continue back to the recorded open session', async () => {
+  it('sends a later Continue back to the recorded open session, and reaches Didit at most once per 10 seconds and 10 times an hour', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    captureLogs();
     const { request, didit, token } = await joinedApp();
     await pressContinue(request, token);
-    const again = await pressContinue(request, token);
+    const tooSoon = await pressContinue(request, token);
+    expect(tooSoon.status).toBe(503);
+    expect(await tooSoon.text()).toContain('Identity verification is not available right now.');
+    const calls = didit.requests.length;
 
-    expect(again.status).toBe(303);
-    expect(again.headers.get('Location')).toBe(didit.sessions[0].url);
+    for (let i = 1; i < 10; i++) {
+      later(10_000);
+      const again = await pressContinue(request, token);
+      expect(again.status).toBe(303);
+      expect(again.headers.get('Location')).toBe(didit.sessions[0].url);
+    }
+    later(10_000);
+    expect((await pressContinue(request, token)).status).toBe(503);
+    expect(didit.requests.length - calls).toBe(9 * 2);
     expect(didit.sessions).toHaveLength(1);
     expect(didit.calls('list')).toHaveLength(1);
   });
@@ -545,6 +557,7 @@ describe('POST /v1/didit/{token}', () => {
 
     captureLogs();
     didit.sessions.splice(1, 1);
+    later(10_000);
     expect((await pressContinue(request, token)).headers.get('Location')).toBe(didit.sessions[1].url);
     expect(didit.sessions).toHaveLength(2);
     expect((await status(request, session)).challenges[0].metadata.state).toBe('in_progress');
@@ -574,8 +587,7 @@ describe('status for a didit_with_email join', () => {
     await status(request, session);
     expect(reads()).toBe(start);
     later(1000);
-    await status(request, session);
-    await status(request, session);
+    await Promise.all([status(request, session), status(request, session), status(request, session)]);
     expect(reads()).toBe(start + 1);
   });
 

@@ -24,6 +24,9 @@ import { maskEmail } from './email-code.js';
 import { isCanonicalAgentKey } from '../utils.js';
 
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+const CONTINUE_SPACING_MS = 10_000;
+const CONTINUES_PER_HOUR = 10;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 /** One printable ASCII address with no space, display name, list separator, quoting or path separator, as one recipient for every provider. */
 const PLAIN_EMAIL_RE = /^[!#-'*+\-.0-9=?A-Z^-~]+@[!#-'*+\-.0-9=?A-Z^-~]+$/;
@@ -242,6 +245,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       if (!attempt || attempt.gone || cs.completed) continue;
       const interval = READ_INTERVAL_MS[cs.link!.state];
       if (interval === undefined || Date.now() - attempt.read_at < interval) continue;
+      if (!(await this.allow(`didit_read:${session.id}:${cs.challenge.id}`, 1, interval))) continue;
       read = true;
       try {
         this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
@@ -260,6 +264,8 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
    */
   async continue(session: SessionData, cs: ChallengeState, token: string): Promise<ContinueOutcome> {
     if (cs.completed) return { kind: 'approved' };
+    const key = `didit_continue:${session.id}:${cs.challenge.id}`;
+    if (!(await this.allow(key, CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) return { kind: 'unavailable' };
     try {
       return (await this.continueRecorded(session, cs, token)) ?? (await this.continueListed(session, cs, token));
     } catch (err) {
@@ -481,6 +487,21 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     if (toAddress.length >= perAddress) clears.push(toAddress[toAddress.length - perAddress] + DAY_MS);
     if (toAddress.length > 0) clears.push(toAddress[toAddress.length - 1] + this.config.resend_interval_seconds * 1000);
     return Math.max(...clears) - now;
+  }
+
+  /**
+   * Records an event under `key` unless `count` happened within `windowMs`,
+   * or one within `spacingMs`, and answers whether it was recorded.
+   */
+  private async allow(key: string, count: number, windowMs: number, spacingMs = 0): Promise<boolean> {
+    const now = Date.now();
+    const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {
+      const clears = [now];
+      if (times.length >= count) clears.push(times[times.length - count] + windowMs);
+      if (times.length > 0) clears.push(times[times.length - 1] + spacingMs);
+      return Math.max(...clears) - now;
+    });
+    return wait <= 0;
   }
 
   private linkUrl(token: string): string {
