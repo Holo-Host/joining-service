@@ -391,24 +391,11 @@ function signedRequestScope(
 
 const MAX_SIGNED_AHEAD_MS = 30_000;
 
-/** Refuses a missing timestamp or signature, or a malformed or stale timestamp. */
-function timestampError(
-  ctx: ServiceContext,
-  timestamp: unknown,
-  signature: unknown,
-): Response | null {
-  if (!timestamp || !signature) {
-    return errorJson(
-      'invalid_signature',
-      'timestamp and signature are required',
-      400,
-    );
-  }
-
+function timestampError(ctx: ServiceContext, timestamp: string): Response | null {
   const toleranceSeconds =
     ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
-  const tsDate = new Date(timestamp as string);
-  if (isNaN(tsDate.getTime())) {
+  const at = Date.parse(timestamp);
+  if (isNaN(at)) {
     return errorJson(
       'timestamp_out_of_range',
       'Invalid timestamp format',
@@ -416,11 +403,19 @@ function timestampError(
     );
   }
 
-  const drift = Math.abs(Date.now() - tsDate.getTime());
+  const drift = Math.abs(Date.now() - at);
   if (drift > toleranceSeconds * 1000) {
     return errorJson(
       'timestamp_out_of_range',
       `Timestamp is ${Math.round(drift / 1000)}s from server time (max ${toleranceSeconds}s)`,
+      400,
+    );
+  }
+  const ahead = at - Date.now();
+  if (ahead > MAX_SIGNED_AHEAD_MS) {
+    return errorJson(
+      'timestamp_out_of_range',
+      `Timestamp is ${Math.round(ahead / 1000)}s ahead of server time (max ${MAX_SIGNED_AHEAD_MS / 1000}s)`,
       400,
     );
   }
@@ -457,16 +452,8 @@ async function signatureError(
   if (typeof timestamp !== 'string' || typeof signature !== 'string') {
     return errorJson('invalid_signature', 'timestamp and signature are required', 400);
   }
-  const stale = timestampError(ctx, timestamp, signature);
+  const stale = timestampError(ctx, timestamp);
   if (stale) return stale;
-  const ahead = Date.parse(timestamp) - Date.now();
-  if (ahead > MAX_SIGNED_AHEAD_MS) {
-    return errorJson(
-      'timestamp_out_of_range',
-      `Timestamp is ${Math.round(ahead / 1000)}s ahead of server time (max ${MAX_SIGNED_AHEAD_MS / 1000}s)`,
-      400,
-    );
-  }
   if (await signedByAgent(agentKey, message(timestamp), signature)) return null;
   return errorJson(
     'invalid_signature',
@@ -1268,14 +1255,13 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     const body = await c.req.json();
-    const { timestamp, signature } = body;
 
     const scope = signedRequestScope(ctx, body);
     if (scope instanceof Response) return scope;
     const { agentKey: agent_key, network: requestedNetwork } = scope;
 
-    const stale = timestampError(ctx, timestamp, signature);
-    if (stale) return stale;
+    const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => t);
+    if (refused) return refused;
 
     // Verify agent has joined -- linker/gateway URLs are service-wide, not
     // per-network, so any ready session for this agent satisfies reconnect.
@@ -1285,14 +1271,6 @@ export function createApp(ctx: ServiceContext): Hono {
         'agent_not_joined',
         'This agent key has not completed joining',
         403,
-      );
-    }
-
-    if (!(await signedByAgent(agent_key, timestamp, signature))) {
-      return errorJson(
-        'invalid_signature',
-        'Signature does not verify against agent key',
-        400,
       );
     }
 

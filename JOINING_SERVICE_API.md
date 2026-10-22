@@ -504,7 +504,7 @@ This endpoint does **not** re-run verification challenges. Instead, the agent pr
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `agent_key` | string | yes | Base64-encoded 39-byte AgentPubKey (same key used during join) |
-| `timestamp` | string (ISO 8601) | yes | Current UTC timestamp. Server rejects if more than 5 minutes from server time. |
+| `timestamp` | string (ISO 8601) | yes | The time of signing. |
 | `signature` | string | yes | Base64-encoded ed25519 signature of the exact `timestamp` string, signed with the private key corresponding to `agent_key`. The signature covers only `timestamp` -- `network` selects among the agent's own already-authenticated sessions and does not need to be signed over. |
 | `network` | string | no | `happ_id` of the network whose session token to look up (same value as sent to `POST /v1/join`). Omitted, or equal to the service's own statically configured happ id, targets the static network -- both spellings are the same scope, as in Section 3.2. If present but not a string, or not matching the happ_id format, the request is rejected with 400 `unknown_network` rather than falling back to the static scope. |
 
@@ -545,8 +545,8 @@ The linker/gateway URL refresh and the session-token lookup are checked separate
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
-| 400 | `invalid_signature` | Signature does not verify against agent key |
-| 400 | `timestamp_out_of_range` | Timestamp is more than 5 minutes from server time |
+| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
+| 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
 | 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
 | 403 | `agent_not_joined` | This agent key has no ready session at all, or `network` was explicitly given as a network other than the static one and has no ready session there |
 | 403 | `agent_revoked` | Agent was blocked by administrator (hc_auth_approval revocation) |
@@ -1092,14 +1092,14 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
-- An unsigned join does not prove private key ownership. That proof happens at the Holochain network level during genesis and all subsequent signed actions. A signed join (Section 3.2) and resume (Section 3.16) do prove it.
+- An unsigned join does not prove private key ownership. That proof happens at the Holochain network level during genesis and all subsequent signed actions. A signed join (Section 3.2), resume (Section 3.16) and reconnect (Section 3.6) do prove it.
 - A signed join, resume and reconnect answer `invalid_signature` for a key in any form but its canonical one, one whose DHT location does not match its core key, or a small-order key, which verifies one fixed signature for any message.
 
 ### Reconnect Replay Window
 
-`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting any timestamp within `reconnect.timestamp_tolerance_seconds` of server time (default 300). Ready sessions do not expire, so a reconnect request observed anywhere — a proxy log, a debug capture, a compromised client — can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
+`POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting a timestamp within `reconnect.timestamp_tolerance_seconds` (default 300) of server time and no more than 30 seconds ahead of it. Ready sessions do not expire, so a reconnect request observed anywhere, such as a proxy log, a debug capture or a compromised client, can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
 
-A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Both refuse a timestamp more than 30 seconds ahead of server time, so one of their pairs is accepted for at most 30 seconds plus the tolerance. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope.
+A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope.
 
 Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to sign at least the agent key and a server-issued nonce, so that a captured signature cannot be replayed at all.
 
