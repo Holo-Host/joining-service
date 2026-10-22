@@ -652,21 +652,20 @@ export function createApp(ctx: ServiceContext): Hono {
       return errorJson('agent_already_joined', ALREADY_JOINED, 409);
     }
 
-    // An unsigned join never replaces a pending link session, and a join
-    // refused before it writes its own session leaves it working.
     const replacesLink = existing?.status === 'pending' && holdsLink(existing);
-    if (replacesLink && !signed) {
+    if (replacesLink && !signed && !body.delegated_verification) {
       return errorJson(
         'join_in_progress',
         'Use POST /v1/join/resume, or sign the join to start again',
         409,
       );
     }
+    // A replaced link session is deleted only when this join writes its own,
+    // so a refused join leaves the link working.
     const dropReplacedLink = async () => {
       if (replacesLink) await ctx.sessionStore.delete(existing.id);
     };
 
-    // Delete any stale pending session for this agent
     if (existing && !replacesLink) {
       await ctx.sessionStore.delete(existing.id);
     }

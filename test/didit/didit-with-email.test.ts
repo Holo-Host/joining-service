@@ -181,7 +181,7 @@ describe('didit_with_email join', () => {
     expect(emails).toHaveLength(0);
   });
 
-  it('refuses an unsigned join with an email, and keeps unsigned joins without one and partner-verified joins as they were', async () => {
+  it('refuses an unsigned join with an email, and keeps unsigned joins without one and partner-verified joins as they were, even over a pending link session', async () => {
     resetRateLimitState();
     const { request, ctx, emails } = await diditApp({
       auth_methods: [{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }],
@@ -198,9 +198,12 @@ describe('didit_with_email join', () => {
     expect(allowListJoin.status).toBe(201);
     expect((await allowListJoin.json()).challenges[0].type).toBe('agent_allow_list');
 
-    const partnered = await partnerJoin(request, (await signingAgent()).agentKey);
+    const linked = await signingAgent();
+    const { session } = await joined(request, emails, linked);
+    const partnered = await partnerJoin(request, linked.agentKey);
     expect(partnered.status).toBe(201);
     expect((await partnered.json()).status).toBe('ready');
+    expect(await ctx.sessionStore.get(session)).toBeNull();
   });
 
   it.each([
