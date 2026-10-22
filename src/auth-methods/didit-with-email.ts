@@ -280,7 +280,10 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     if (cs.completed) return { kind: 'approved' };
     const key = `didit_continue:${session.id}:${cs.challenge.id}`;
-    if (!(await this.allow(key, Date.now(), CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) return { kind: 'unavailable' };
+    if (!(await this.allow(key, Date.now(), CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) {
+      console.warn('[didit_with_email] a challenge is over its Continue limit of one per 10 seconds and 10 an hour');
+      return { kind: 'unavailable' };
+    }
     try {
       return (await this.continueRecorded(session, cs)) ?? (await this.continueListed(session, cs));
     } catch (err) {
@@ -327,7 +330,9 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       }
       const field = this.mismatch(decision, link, session.agent_key);
       if (state === 'in_progress' && (!field || field === 'metadata.agent_key')) {
-        return field && decision.status !== 'Not Started' ? { kind: 'busy' } : this.open(session, cs);
+        if (!field || decision.status === 'Not Started') return this.open(session, cs);
+        console.warn(`[didit_with_email] listed session ${row.session_id} is another key's verification under way`);
+        return { kind: 'busy' };
       }
       if (field) console.warn(`[didit_with_email] listed session ${row.session_id} is not this join's: ${field} differs`);
       if (field || (state !== 'approved' && state !== 'in_review')) continue;
@@ -367,22 +372,24 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       console.error(`[didit_with_email] new Didit sessions in 24 hours reach didit.max_sessions_per_day of ${this.config.max_sessions_per_day}`);
       return { kind: 'unavailable' };
     }
-    try {
-      return await this.open(session, cs);
-    } catch (err) {
-      await this.store.removeEvents([NEW_SESSIONS_KEY], now).catch(() => {});
-      throw err;
-    }
+    return this.open(session, cs, () =>
+      storeStep('give back a new Didit session', () => this.store.removeEvents([NEW_SESSIONS_KEY], now)),
+    );
   }
 
   /** Creates a session, or takes over the email's open one, and records it on the challenge. */
-  private async open(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
+  private async open(session: SessionData, cs: ChallengeState, createFailed?: () => Promise<void>): Promise<ContinueOutcome> {
     const link = cs.link!;
-    const created = await this.client.createSession({
-      vendorData: link.subject_id,
-      callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
-      agentKey: session.agent_key,
-    });
+    const created = await this.client
+      .createSession({
+        vendorData: link.subject_id,
+        callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
+        agentKey: session.agent_key,
+      })
+      .catch(async (err: unknown) => {
+        await createFailed?.().catch(() => {});
+        throw err;
+      });
     const now = Date.now();
     const prev = link.attempt;
     const same = prev?.session_id === created.session_id;
@@ -518,7 +525,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {
       const clears = [now];
       if (times.length >= count) clears.push(times[times.length - count] + windowMs);
-      if (times.length > 0) clears.push(times[times.length - 1] + spacingMs);
+      if (spacingMs > 0 && times.length > 0) clears.push(times[times.length - 1] + spacingMs);
       return Math.max(...clears) - now;
     });
     return wait <= 0;
