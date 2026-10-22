@@ -299,16 +299,16 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     vi.useRealTimers();
   });
 
-  it('keeps a live link session older than the pending TTL, removes it once expired, and drops events past their TTL', async () => {
+  it('drops events past their own TTL, keeps a live link session older than the pending TTL, and removes it once expired', async () => {
     const store = new SqliteSessionStore(':memory:', TTL_SECONDS);
     await store.create(session());
     await store.reserveEvents(['agent:k'], NOW, TTL_MS, () => 0);
     vi.setSystemTime(NOW + 2 * TTL_MS);
-    store.cleanup();
-    expect(await store.findByLinkHash('hash_1')).not.toBeNull();
     const { seen, record } = recorder(store);
     await record(['agent:k'], NOW + 2 * TTL_MS);
     expect(seen).toEqual([[[]]]);
+    store.cleanup();
+    expect(await store.findByLinkHash('hash_1')).not.toBeNull();
 
     vi.setSystemTime(LINK_EXPIRES + 1);
     store.cleanup();

@@ -466,6 +466,7 @@ describe('POST /v1/didit/{token}', () => {
         code: 409,
         polled: { status: 'pending', challenges: [{ metadata: { state: 'link_sent' } }] },
         says: 'Another device is verifying this email. Finish there, or try again when it ends.',
+        logged: "another key's verification under way",
       },
     ],
     [
@@ -532,7 +533,7 @@ describe('POST /v1/didit/{token}', () => {
     expect(register).toHaveBeenCalledTimes(polled.status === 'ready' ? 1 : 0);
   });
 
-  it('opens at most didit.max_sessions_per_day new Didit sessions a day across the service, and a failed create does not count', async () => {
+  it('opens at most didit.max_sessions_per_day new Didit sessions a day across the service, and counts only the creates that succeed', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const lines = captureLogs();
     const app = await joinedApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_day: 1 } });
@@ -550,7 +551,10 @@ describe('POST /v1/didit/{token}', () => {
     expect((await pressContinue(app.request, app.token)).status).toBe(303);
 
     later(86_400_000);
-    expect((await pressContinue(app.request, other.token)).status).toBe(303);
+    vi.spyOn(app.ctx.sessionStore, 'update').mockRejectedValueOnce(new Error('KV down'));
+    expect((await pressContinue(app.request, other.token)).status).toBe(503);
+    const third = await joined(app.request, app.emails, await signingAgent(), 'hopper@example.com');
+    expect((await pressContinue(app.request, third.token)).status).toBe(503);
     expect(app.didit.sessions).toHaveLength(2);
   });
 
@@ -579,12 +583,14 @@ describe('POST /v1/didit/{token}', () => {
 
   it('sends a later Continue back to the recorded open session, and reaches Didit at most once per 10 seconds and 10 times an hour', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    captureLogs();
-    const { request, didit, token } = await joinedApp();
+    const lines = captureLogs();
+    const { request, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
     const tooSoon = await pressContinue(request, token);
     expect(tooSoon.status).toBe(503);
     expect(await tooSoon.text()).toContain('Identity verification is not available right now.');
+    expect(lines.join('\n')).toContain('over its Continue limit of one per 10 seconds and 10 an hour');
+    expect(lines.join('\n')).not.toContain(session);
     const calls = didit.requests.length;
 
     for (let i = 1; i < 10; i++) {
