@@ -229,9 +229,10 @@ describe('Reconnect flow', () => {
   });
 
   it.each([
-    ['a stale timestamp', -600_000],
-    ['a timestamp more than 30 seconds ahead', 31_000],
-  ])('reconnect with %s returns 400', async (_name, offsetMs) => {
+    ['a stale timestamp', () => new Date(Date.now() - 600_000).toISOString()],
+    ['a timestamp more than 30 seconds ahead', () => new Date(Date.now() + 31_000).toISOString()],
+    ['a resume message, which Date.parse reads as a date', () => `resume:${new Date().toUTCString()}`],
+  ])('reconnect with %s returns 400', async (_name, timestampNow) => {
     const { request } = await createTestApp({
       reconnect: { enabled: true, timestamp_tolerance_seconds: 300 },
     });
@@ -247,7 +248,7 @@ describe('Reconnect flow', () => {
       body: JSON.stringify({ agent_key: agentKey }),
     });
 
-    const timestamp = new Date(Date.now() + offsetMs).toISOString();
+    const timestamp = timestampNow();
     const sig = await ed.signAsync(
       new TextEncoder().encode(timestamp),
       privateKey,

@@ -390,12 +390,15 @@ function requestScope(
 }
 
 const MAX_SIGNED_AHEAD_MS = 30_000;
+// Date.parse alone also reads a string such as `resume:{date}` as a date, which
+// would let one route's signed message pass as reconnect's bare timestamp.
+const SIGNED_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$/;
 
 function timestampError(ctx: ServiceContext, timestamp: string): Response | null {
   const toleranceSeconds =
     ctx.config.reconnect?.timestamp_tolerance_seconds ?? 300;
   const at = Date.parse(timestamp);
-  if (isNaN(at)) {
+  if (!SIGNED_TIMESTAMP_RE.test(timestamp) || isNaN(at)) {
     return errorJson(
       'timestamp_out_of_range',
       'Invalid timestamp format',
