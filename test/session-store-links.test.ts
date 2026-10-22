@@ -85,7 +85,7 @@ const factories: Array<[string, Factory]> = [
   [
     'cloudflare-kv',
     () => {
-      const kv = createMockKV({ latencyMs: 5 });
+      const kv = createMockKV({ latencyMs: 5, pageSize: 2 });
       return { store: new KvSessionStore(kv, TTL_SECONDS), second: () => new KvSessionStore(kv, TTL_SECONDS), close: () => {} };
     },
   ],
@@ -299,12 +299,16 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     vi.useRealTimers();
   });
 
-  it('keeps a live link session older than the pending TTL and removes it once expired', async () => {
+  it('keeps a live link session older than the pending TTL, removes it once expired, and drops events past their TTL', async () => {
     const store = new SqliteSessionStore(':memory:', TTL_SECONDS);
     await store.create(session());
+    await store.reserveEvents(['agent:k'], NOW, TTL_MS, () => 0);
     vi.setSystemTime(NOW + 2 * TTL_MS);
     store.cleanup();
     expect(await store.findByLinkHash('hash_1')).not.toBeNull();
+    const { seen, record } = recorder(store);
+    await record(['agent:k'], NOW + 2 * TTL_MS);
+    expect(seen).toEqual([[[]]]);
 
     vi.setSystemTime(LINK_EXPIRES + 1);
     store.cleanup();
@@ -312,6 +316,16 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     expect(await store.get('js_link')).toBeNull();
     expect(await store.findByLinkHash('hash_1')).toBeNull();
     store.close();
+  });
+
+  it('gives back a KV event that a list does not show yet', async () => {
+    const store = new KvSessionStore(createMockKV({ listLagMs: 60_000 }), TTL_SECONDS);
+    await store.reserveEvents(['agent:k'], NOW, DAY, () => 0);
+    await store.removeEvents(['agent:k'], NOW);
+    vi.setSystemTime(NOW + 60_000);
+    const { seen, record } = recorder(store);
+    await record(['agent:k'], NOW + 60_000);
+    expect(seen).toEqual([[[]]]);
   });
 
   it('expires a pending KV link session at the link expiry, at least 60 seconds ahead as KV requires, and a ready one never', async () => {

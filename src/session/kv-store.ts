@@ -19,7 +19,7 @@ interface KVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: KvPutOptions): Promise<void>;
   delete(key: string): Promise<void>;
-  list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
+  list(options?: { prefix?: string; cursor?: string }): Promise<{ keys: { name: string }[]; list_complete?: boolean; cursor?: string }>;
 }
 
 interface KvPutOptions {
@@ -34,6 +34,7 @@ const EVENT_PREFIX = 'event:';
 
 /** KV refuses an expiration less than 60 seconds ahead. */
 const MIN_EXPIRATION_AHEAD_SECONDS = 60;
+const MAX_RESERVATIONS_KEPT = 100;
 
 function expirationAt(ms: number): number {
   return Math.max(Math.ceil(ms / 1000), Math.floor(Date.now() / 1000) + MIN_EXPIRATION_AHEAD_SECONDS);
@@ -56,6 +57,8 @@ function agentIndexPrefix(agentKey: string): string {
 export class KvSessionStore implements LinkSessionStore {
   private kv: KVNamespace;
   private pendingTtlSeconds: number;
+  /** The event keys this store recorded, by `key\0at`, so a give-back needs no list, which can lag a new key. */
+  private reserved = new Map<string, string[]>();
 
   constructor(
     kv: KVNamespace,
@@ -175,27 +178,41 @@ export class KvSessionStore implements LinkSessionStore {
     const earlier: number[][] = [];
     for (const [i, key] of keys.entries()) earlier.push(await this.eventTimes(key, at - ttlMs, mine[i]));
     const delay = wait(earlier);
-    if (delay <= 0) return 0;
-    for (const name of mine) await this.kv.delete(name);
-    return delay;
+    if (delay > 0) {
+      for (const name of mine) await this.kv.delete(name);
+      return delay;
+    }
+    keys.forEach((key, i) => {
+      const id = `${key}\0${at}`;
+      this.reserved.set(id, [...(this.reserved.get(id) ?? []), mine[i]]);
+    });
+    while (this.reserved.size > MAX_RESERVATIONS_KEPT) this.reserved.delete(this.reserved.keys().next().value!);
+    return 0;
   }
 
   async removeEvents(keys: string[], at: number): Promise<void> {
     for (const key of keys) {
-      const { keys: found } = await this.kv.list({ prefix: `${eventPrefix(key)}${at}\0` });
-      if (found.length > 0) await this.kv.delete(found[0].name);
+      const id = `${key}\0${at}`;
+      const [name, ...rest] = this.reserved.get(id) ?? [];
+      if (rest.length > 0) this.reserved.set(id, rest);
+      else this.reserved.delete(id);
+      if (name) await this.kv.delete(name);
     }
   }
 
-  /** The times after `after` of every event of `key` but the one named `except`, oldest first. */
   private async eventTimes(key: string, after: number, except: string): Promise<number[]> {
     const prefix = eventPrefix(key);
-    const { keys } = await this.kv.list({ prefix });
-    return keys
-      .filter((k) => k.name !== except)
-      .map((k) => Number(k.name.slice(prefix.length).split('\0')[0]))
-      .filter((t) => t > after)
-      .sort((a, b) => a - b);
+    const times: number[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.kv.list({ prefix, cursor });
+      for (const { name } of page.keys) {
+        const t = Number(name.slice(prefix.length).split('\0')[0]);
+        if (name !== except && t > after) times.push(t);
+      }
+      cursor = page.list_complete === false ? page.cursor : undefined;
+    } while (cursor);
+    return times.sort((a, b) => a - b);
   }
 
   private async indexLinkHashes(session: SessionData, hashes: string[], opts: KvPutOptions): Promise<void> {

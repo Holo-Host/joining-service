@@ -21,7 +21,8 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_link_tokens_session ON link_tokens(session_id);
   CREATE TABLE IF NOT EXISTS events (
     key TEXT NOT NULL,
-    at INTEGER NOT NULL
+    at INTEGER NOT NULL,
+    expires INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_key_at ON events(key, at);
 `;
@@ -44,6 +45,7 @@ export class SqliteSessionStore implements LinkSessionStore {
   private stmtPruneEvents: Database.Statement;
   private stmtEventTimes: Database.Statement;
   private stmtRemoveEvent: Database.Statement;
+  private stmtCleanupEvents: Database.Statement;
 
   constructor(
     dbPath: string,
@@ -107,7 +109,8 @@ export class SqliteSessionStore implements LinkSessionStore {
     );
     this.stmtFindLinkToken = this.db.prepare('SELECT session_id FROM link_tokens WHERE hash = ?');
     this.stmtDeleteLinkTokens = this.db.prepare('DELETE FROM link_tokens WHERE session_id = ?');
-    this.stmtInsertEvent = this.db.prepare('INSERT INTO events (key, at) VALUES (?, ?)');
+    this.stmtInsertEvent = this.db.prepare('INSERT INTO events (key, at, expires) VALUES (?, ?, ?)');
+    this.stmtCleanupEvents = this.db.prepare('DELETE FROM events WHERE expires <= ?');
     this.stmtPruneEvents = this.db.prepare('DELETE FROM events WHERE key = ? AND at <= ?');
     this.stmtEventTimes = this.db.prepare('SELECT at FROM events WHERE key = ? ORDER BY at');
     this.stmtRemoveEvent = this.db.prepare(
@@ -200,7 +203,7 @@ export class SqliteSessionStore implements LinkSessionStore {
       });
       const delay = wait(earlier);
       if (delay > 0) return delay;
-      for (const key of keys) this.stmtInsertEvent.run(key, at);
+      for (const key of keys) this.stmtInsertEvent.run(key, at, at + ttlMs);
       return 0;
     })();
   }
@@ -210,14 +213,15 @@ export class SqliteSessionStore implements LinkSessionStore {
   }
 
   /**
-   * Deletes expired sessions older than the pending TTL. A session holding a
-   * link challenge lives as long as the challenge.
+   * Deletes expired sessions older than the pending TTL, and events past
+   * their TTL. A session holding a link challenge lives as long as the challenge.
    */
   cleanup(): void {
     const rows = this.stmtCleanupCandidates.all(Date.now() - this.pendingTtlMs) as RawRow[];
     for (const row of rows) {
       if (isExpired(rowToSession(row), this.pendingTtlMs)) this.remove(row.id);
     }
+    this.stmtCleanupEvents.run(Date.now());
   }
 
   close(): void {
