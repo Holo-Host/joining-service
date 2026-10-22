@@ -31,6 +31,7 @@ describe('resolveDiditConfig', () => {
   it('fills the limit defaults', () => {
     expect(resolveDiditConfig(CONFIG)).toMatchObject({
       max_sessions_per_email: 3,
+      max_sessions_per_day: 100,
       link_ttl_seconds: 604_800,
       resend_interval_seconds: 60,
       max_emails_per_address: 5,

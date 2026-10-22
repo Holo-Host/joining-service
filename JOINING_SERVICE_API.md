@@ -1262,7 +1262,9 @@ Challenge sent to client. `group` is present only in an `any_of` group, and stat
 - **One email, several agent keys.** Didit keeps one open session per email and hands it to whichever key pressed Continue last. Each key completes only from a session that names it, and a key that Didit already approved for this email completes again without a new verification. The sessions of one email share `didit.max_sessions_per_email`. A session whose Didit status this service does not know never counts as a used attempt: Continue answers unavailable while Didit lists one.
 - **Read interval.** Status, resume and the done page read a decision at most once per interval, however many of them arrive at once: 15 seconds while the session is open, 60 seconds in review, and 300 seconds after a decline or expiry. An approved session is never read again. A failed read counts as a read, so that session waits its interval before the next. Continue always reads, since it decides which session the browser goes to.
 - **Expiry.** The challenge and its session expire `didit.link_ttl_seconds` after the join.
-- **Email limits.** At most `didit.max_emails_per_address` emails to one address and `didit.max_emails_per_agent` for one agent key in 24 hours, at least `didit.resend_interval_seconds` apart for one address. A refusal answers `429 rate_limited` with `Retry-After`, which for an agent key over its limit is that key's wait alone. Neither a refused email nor one that fails to send counts. On the Cloudflare KV store, each email is a key of its own and KV lists a new key up to 60 seconds late, so emails closer together than that can each pass a limit. The rule that a link's progress never goes back holds there only at best: KV has no compare-and-swap and can serve a stale read.
+- **Email limits.** At most `didit.max_emails_per_address` emails to one address and `didit.max_emails_per_agent` for one agent key in 24 hours, at least `didit.resend_interval_seconds` apart for one address. A refusal answers `429 rate_limited` with `Retry-After`, which for an agent key over its limit is that key's wait alone. Neither a refused email nor one that fails to send counts.
+- **New sessions.** The whole service opens at most `didit.max_sessions_per_day` new Didit sessions in 24 hours. Reusing an email's open session does not count, and a create that fails gives its count back. Past the limit, Continue answers the unavailable page and logs `didit.max_sessions_per_day`.
+- **Limits on the Cloudflare KV store.** Each counted event is a KV key of its own, and KV lists a new key up to 60 seconds late. So emails, Continue presses, decision reads and new sessions closer together than that can each pass their limit, and one count reaches at most the 1000 keys that one KV list returns. The rule that a link's progress never goes back holds there only at best: KV has no compare-and-swap and can serve a stale read.
 
 Config:
 ```json
@@ -1288,6 +1290,7 @@ Config:
 | `workflow_id` | string | yes | The Didit workflow UUID |
 | `environment` | `"live"` \| `"sandbox"` | yes | Must match the environment of the Didit application that `api_key` belongs to |
 | `max_sessions_per_email` | number | no | Didit sessions one email can open, across every agent key. Default: 3 |
+| `max_sessions_per_day` | number | no | New Didit sessions the whole service opens in 24 hours. On the Cloudflare KV store, a value above 1000 sets no limit. Default: 100 |
 | `link_ttl_seconds` | number | no | How long the challenge and its links last. Default: 604800 (7 days) |
 | `resend_interval_seconds` | number | no | Least time between two emails to one address. Default: 60 |
 | `max_emails_per_address` | number | no | Emails to one address in 24 hours. Default: 5 |

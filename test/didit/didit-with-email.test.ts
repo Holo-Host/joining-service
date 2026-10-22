@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { HcAuthClient } from '../../src/hc-auth/client.js';
-import { subjectId } from '../../src/didit/client.js';
+import { DiditClient, DiditUnavailableError, subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
@@ -518,6 +518,28 @@ describe('POST /v1/didit/{token}', () => {
     expect(shown).toMatchObject(polled);
     if (polled.status === 'rejected') expect(shown).toEqual(polled);
     expect(register).toHaveBeenCalledTimes(polled.status === 'ready' ? 1 : 0);
+  });
+
+  it('opens at most didit.max_sessions_per_day new Didit sessions a day across the service, and a failed create does not count', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const lines = captureLogs();
+    const app = await joinedApp({ didit: { ...DIDIT_SERVICE.didit!, max_sessions_per_day: 1 } });
+    vi.spyOn(DiditClient.prototype, 'createSession').mockRejectedValueOnce(new DiditUnavailableError('Didit is down'));
+    expect((await pressContinue(app.request, app.token)).status).toBe(503);
+    later(10_000);
+    expect((await pressContinue(app.request, app.token)).status).toBe(303);
+
+    const other = await joined(app.request, app.emails, await signingAgent(), 'grace@example.com');
+    const refused = await pressContinue(app.request, other.token);
+    expect(refused.status).toBe(503);
+    expect(await refused.text()).toContain('Identity verification is not available right now.');
+    expect(lines.join('\n')).toContain('didit.max_sessions_per_day of 1');
+    later(10_000);
+    expect((await pressContinue(app.request, app.token)).status).toBe(303);
+
+    later(86_400_000);
+    expect((await pressContinue(app.request, other.token)).status).toBe(303);
+    expect(app.didit.sessions).toHaveLength(2);
   });
 
   it('changes nothing while Didit is unreachable', async () => {

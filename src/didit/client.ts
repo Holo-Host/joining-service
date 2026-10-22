@@ -14,6 +14,7 @@ export interface DiditConfig {
   workflow_id: string;
   environment: 'live' | 'sandbox';
   max_sessions_per_email?: number;
+  max_sessions_per_day?: number;
   link_ttl_seconds?: number;
   resend_interval_seconds?: number;
   max_emails_per_address?: number;
@@ -24,6 +25,7 @@ export interface DiditConfig {
 
 const LIMIT_DEFAULTS = {
   max_sessions_per_email: 3,
+  max_sessions_per_day: 100,
   link_ttl_seconds: 604_800,
   resend_interval_seconds: 60,
   max_emails_per_address: 5,

@@ -28,6 +28,7 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const CONTINUE_SPACING_MS = 10_000;
 const CONTINUES_PER_HOUR = 10;
+const NEW_SESSIONS_KEY = 'didit_create';
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 /** One printable ASCII address with no space, display name, list separator, quoting or path separator, as one recipient for every provider. */
 const PLAIN_EMAIL_RE = /^[!#-'*+\-.0-9=?A-Z^-~]+@[!#-'*+\-.0-9=?A-Z^-~]+$/;
@@ -258,7 +259,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       if (!attempt || attempt.gone || cs.completed) continue;
       const interval = READ_INTERVAL_MS[cs.link!.state];
       if (interval === undefined || Date.now() - attempt.read_at < interval) continue;
-      if (!(await this.allow(`didit_read:${session.id}:${cs.challenge.id}`, 1, interval))) continue;
+      if (!(await this.allow(`didit_read:${session.id}:${cs.challenge.id}`, Date.now(), 1, interval))) continue;
       read = true;
       try {
         this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
@@ -278,7 +279,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     if (cs.completed) return { kind: 'approved' };
     const key = `didit_continue:${session.id}:${cs.challenge.id}`;
-    if (!(await this.allow(key, CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) return { kind: 'unavailable' };
+    if (!(await this.allow(key, Date.now(), CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) return { kind: 'unavailable' };
     try {
       return (await this.continueRecorded(session, cs)) ?? (await this.continueListed(session, cs));
     } catch (err) {
@@ -360,7 +361,17 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       });
       return { kind: 'rejected' };
     }
-    return this.open(session, cs);
+    const now = Date.now();
+    if (!(await this.allow(NEW_SESSIONS_KEY, now, this.config.max_sessions_per_day, DAY_MS))) {
+      console.error(`[didit_with_email] new Didit sessions in 24 hours reach didit.max_sessions_per_day of ${this.config.max_sessions_per_day}`);
+      return { kind: 'unavailable' };
+    }
+    try {
+      return await this.open(session, cs);
+    } catch (err) {
+      await this.store.removeEvents([NEW_SESSIONS_KEY], now).catch(() => {});
+      throw err;
+    }
   }
 
   /** Creates a session, or takes over the email's open one, and records it on the challenge. */
@@ -499,11 +510,10 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   /**
-   * Records an event under `key` unless `count` happened within `windowMs`,
-   * or one within `spacingMs`, and answers whether it was recorded.
+   * Records an event at `now` under `key` unless `count` happened within
+   * `windowMs`, or one within `spacingMs`, and answers whether it was recorded.
    */
-  private async allow(key: string, count: number, windowMs: number, spacingMs = 0): Promise<boolean> {
-    const now = Date.now();
+  private async allow(key: string, now: number, count: number, windowMs: number, spacingMs = 0): Promise<boolean> {
     const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {
       const clears = [now];
       if (times.length >= count) clears.push(times[times.length - count] + windowMs);
