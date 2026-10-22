@@ -170,4 +170,37 @@ describe('hc-auth integration — email_code auth (ready on verify)', () => {
 
     expect(spy).toHaveBeenCalledOnce();
   });
+
+  it('keeps the session pending when a required hc-auth step fails on the final verify, which the same verify or a status poll retries', async () => {
+    const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true };
+    const client = new HcAuthClient(HC);
+    const spy = vi.spyOn(client, 'registerAndAuthorize').mockRejectedValue(new Error('hc-auth down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request, ctx } = await createTestApp(
+      { auth_methods: ['email_code'], email: { provider: 'file', output_dir: '/tmp/test-emails' }, hc_auth: HC },
+      undefined,
+      undefined,
+      client,
+    );
+    const joinRes = await request('/v1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: fakeAgentKey(43), claims: { email: 'a@b.com' } }),
+    });
+    const { session, challenges } = await joinRes.json();
+    const expectedCode = (await ctx.sessionStore.get(session))!.challenges[0].expected_response;
+
+    const verify = () => request(`/v1/join/${session}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_id: challenges[0].id, response: expectedCode }),
+    });
+    expect((await verify()).status).toBe(503);
+    expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
+    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
+
+    spy.mockResolvedValue();
+    expect(await (await verify()).json()).toEqual({ status: 'ready' });
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
 });

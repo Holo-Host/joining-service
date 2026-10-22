@@ -477,11 +477,12 @@ function pendingView(session: SessionData) {
  * `ready` last. A failed required step leaves the session pending for the
  * next call to retry.
  */
-async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): Promise<void> {
-  if (session.status !== 'pending' || !allSatisfied(session.challenges)) return;
+async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): Promise<boolean> {
+  if (session.status !== 'pending' || !allSatisfied(session.challenges)) return false;
   await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
   await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
   session.status = 'ready';
+  return true;
 }
 
 const ALREADY_JOINED =
@@ -912,6 +913,7 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     if (challengeState.completed) {
+      if (await completeIfSatisfied(ctx, session)) return c.json({ status: 'ready' });
       return errorJson(
         'challenge_not_found',
         'Challenge already completed',
@@ -959,20 +961,11 @@ export function createApp(ctx: ServiceContext): Hono {
     }
 
     challengeState.completed = true;
+    await ctx.sessionStore.update(sessionId, { challenges: session.challenges });
+    await completeIfSatisfied(ctx, session);
 
-    const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
-
-    await ctx.sessionStore.update(sessionId, {
-      status: newStatus,
-      challenges: session.challenges,
-    });
-
-    if (newStatus === 'ready') {
-      await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
-    }
-
-    const resp: Record<string, unknown> = { status: newStatus };
-    if (newStatus === 'pending') {
+    const resp: Record<string, unknown> = { status: session.status };
+    if (session.status === 'pending') {
       resp.challenges_remaining = session.challenges
         .filter((cs) => !cs.completed)
         .map((cs) => stripInternal(cs.challenge));
@@ -1036,8 +1029,8 @@ export function createApp(ctx: ServiceContext): Hono {
 
     if (session.status === 'pending' && didit && holdsLink(session)) {
       await didit.refresh(session);
-      await completeIfSatisfied(ctx, session);
     }
+    await completeIfSatisfied(ctx, session);
 
     const resp: Record<string, unknown> = { status: session.status };
 

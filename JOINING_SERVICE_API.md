@@ -379,6 +379,7 @@ For EVM signature challenges, `response` is the hex-encoded signature:
 | 410 | `challenge_expired` | Challenge has expired; client should `POST /join` again |
 | 422 | `verification_failed` | Response was incorrect (e.g., wrong code). A `didit_with_email` challenge answers this, with "Open the link in the email to continue", and the call counts toward the attempt limit. |
 | 429 | `rate_limited` | Too many verification attempts |
+| 503 | `service_unavailable` | The challenge passed, but a required hc-auth step failed. The session stays pending, and a status poll or the same verify again retries. |
 
 ---
 
@@ -419,7 +420,7 @@ For an open `didit_with_email` challenge with a Didit session, status first read
 |-------------|------|-------------|
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 410 | `session_expired` | Session has expired entirely |
-| 503 | `service_unavailable` | A `didit_with_email` approval could not be made ready at a required hc-auth step. The session stays pending with the challenge approved, and the next poll retries. |
+| 503 | `service_unavailable` | A session whose every requirement is met could not be made ready at a required hc-auth step. The session stays pending, and the next poll retries. |
 
 ---
 
