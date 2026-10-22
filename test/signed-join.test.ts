@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createTestApp, joinMessage, postJson, resumeMessage, signingAgent } from './helpers.js';
+import { createTestApp, joinMessage, postJson, resumeMessage, signingAgent, smallOrderSigned } from './helpers.js';
 import { HcAuthClient } from '../src/hc-auth/client.js';
 import type { SessionData } from '../src/session/store.js';
 
@@ -70,6 +70,7 @@ describe('POST /v1/join/resume', () => {
     ['a cut-off body', 'invalid_json', async () => '{"agent_key":'],
     ['a body that is not an object', 'invalid_json', async () => '42'],
     ['a bad agent key', 'invalid_agent_key', async (agent) => JSON.stringify({ agent_key: 'uhCAknotakey', ...(await agent.sign()) })],
+    ['a small-order key, for which one fixed signature verifies any message', 'invalid_signature', async () => JSON.stringify(smallOrderSigned())],
     ['a malformed network', 'unknown_network', async (agent) => JSON.stringify({ agent_key: agent.agentKey, ...(await agent.sign()), network: 42 })],
   ])('refuses %s with %s before any lookup', async (_name, code, body) => {
     const { request, ctx } = await createTestApp(EMAIL_CONFIG);

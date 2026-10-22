@@ -294,8 +294,8 @@ The client sends its agent key and optional identity claims. The server determin
 
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
-| 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes. For `didit_with_email`, also a key in any form but its canonical one, one whose DHT location does not match its core key, or a small-order key. |
-| 400 | `invalid_signature` | Only one of `timestamp` and `signature` was sent, or the signature does not verify against `agent_key` |
+| 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
+| 400 | `invalid_signature` | Only one of `timestamp` and `signature` was sent, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
 | 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
 | 400 | `unknown_network` | `network` value is not a string, does not match the network-id format, or names a network not registered with this service |
 | 400 | `missing_claims` | Required claims for this hApp's auth method were not provided |
@@ -917,7 +917,7 @@ A pending session whose every requirement is already met (an earlier step to mak
 |-------------|------|-------------|
 | 400 | `invalid_json` | The body is not a JSON object |
 | 400 | `invalid_agent_key` | Agent key is not valid base64 or not 39 bytes |
-| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key` |
+| 400 | `invalid_signature` | `timestamp` or `signature` is missing, or the signature does not verify against `agent_key`, or Section 7 (Agent Key Validation) refuses `agent_key` |
 | 400 | `timestamp_out_of_range` | `timestamp` is malformed, outside `reconnect.timestamp_tolerance_seconds` of server time, or more than 30 seconds ahead of it |
 | 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
 | 404 | `join_not_found` | No session for this agent key in this scope. Start a join with `POST /v1/join`. |
@@ -1091,6 +1091,7 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 ### Agent Key Validation
 - Server validates that `agent_key` decodes to exactly 39 bytes and starts with the AgentPubKey type prefix (`0x84, 0x20, 0x24`).
 - An unsigned join does not prove private key ownership. That proof happens at the Holochain network level during genesis and all subsequent signed actions. A signed join (Section 3.2) and resume (Section 3.16) do prove it.
+- A signed join, resume and reconnect answer `invalid_signature` for a key in any form but its canonical one, one whose DHT location does not match its core key, or a small-order key, which verifies one fixed signature for any message.
 
 ### Reconnect Replay Window
 

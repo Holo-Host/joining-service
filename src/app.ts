@@ -17,6 +17,7 @@ import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
   validateAgentKey,
+  isCanonicalAgentKey,
   toBase64,
   fromBase64,
   decodeHashFromBase64,
@@ -409,6 +410,7 @@ async function signedByAgent(
   message: string,
   signature: string,
 ): Promise<boolean> {
+  if (!isCanonicalAgentKey(agentKey)) return false;
   const sigBytes = fromBase64(signature);
   const msgBytes = new TextEncoder().encode(message);
   // Extract the raw 32-byte ed25519 public key from the 39-byte AgentPubKey

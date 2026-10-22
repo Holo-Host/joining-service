@@ -87,6 +87,17 @@ export async function signingAgent(): Promise<{
   };
 }
 
+/** The identity point as an agent key, with a signature that verifies against it for any message. */
+export function smallOrderSigned(): { agent_key: string; timestamp: string; signature: string } {
+  const identity = new Uint8Array(32);
+  identity[0] = 1;
+  return {
+    agent_key: encodeHashToBase64(agentPubKeyFrom32(identity)),
+    timestamp: new Date().toISOString(),
+    signature: Buffer.from([1, ...new Array(63).fill(0)]).toString('base64'),
+  };
+}
+
 export function postJson(
   request: TestApp['request'],
   path: string,

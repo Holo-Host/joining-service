@@ -5,8 +5,8 @@ import { subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
-import { createTestApp, fakeDnaHash } from '../helpers.js';
-import { agentPubKeyFrom32, decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
+import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
+import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
 import type { UrlProvider } from '../../src/urls/provider.js';
 import type { LinkSessionStore } from '../../src/session/store.js';
@@ -243,23 +243,12 @@ describe('didit_with_email join', () => {
         return { agent_key: encodeHashToBase64(bytes), ...(await agent.sign(joinMessage(EMAIL))) };
       },
     ],
-    [
-      'of small order, for which one fixed signature verifies any message',
-      async () => {
-        const identity = new Uint8Array(32);
-        identity[0] = 1;
-        return {
-          agent_key: encodeHashToBase64(agentPubKeyFrom32(identity)),
-          timestamp: new Date().toISOString(),
-          signature: Buffer.from([1, ...new Array(63).fill(0)]).toString('base64'),
-        };
-      },
-    ],
+    ['of small order, for which one fixed signature verifies any message', async () => smallOrderSigned()],
   ])('refuses an agent key %s, and sends nothing', async (_name, body) => {
     const { request, emails } = await diditApp();
     const res = await postJson(request, '/v1/join', { claims: { email: EMAIL }, ...(await body(await signingAgent())) });
     expect(res.status).toBe(400);
-    expect((await res.json()).error.code).toBe('invalid_agent_key');
+    expect((await res.json()).error.code).toBe('invalid_signature');
     expect(emails).toHaveLength(0);
   });
 

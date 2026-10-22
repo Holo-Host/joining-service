@@ -22,7 +22,6 @@ import {
 } from '../didit/client.js';
 import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './plugin.js';
 import { maskEmail } from './email-code.js';
-import { isCanonicalAgentKey } from '../utils.js';
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -190,10 +189,6 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     _config: unknown,
     joinContext?: JoinContext,
   ): Promise<Challenge[]> {
-    // The person checks the emailed short key, so it must name exactly one key.
-    if (!isCanonicalAgentKey(agentKey)) {
-      throw new JoinRequestError(400, 'invalid_agent_key', 'agent_key must be an AgentPubKey in canonical form');
-    }
     const email = claims.email;
     if (!email) {
       throw new Error('email claim is required for didit_with_email auth');
