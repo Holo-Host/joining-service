@@ -269,12 +269,12 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
-    if (cs.completed) return { kind: 'approved' };
     const key = `didit_continue:${session.id}:${cs.challenge.id}`;
     if (!(await this.allow(key, Date.now(), CONTINUES_PER_HOUR, HOUR_MS, CONTINUE_SPACING_MS))) {
       console.warn(`[didit_with_email] a challenge is over its Continue limit of one per ${CONTINUE_SPACING_MS / 1000} seconds and ${CONTINUES_PER_HOUR} an hour`);
       return { kind: 'unavailable' };
     }
+    if (cs.completed) return { kind: 'approved' };
     try {
       return (await this.continueRecorded(session, cs)) ?? (await this.continueListed(session, cs));
     } catch (err) {

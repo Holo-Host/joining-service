@@ -741,7 +741,7 @@ describe('status for a didit_with_email join', () => {
 });
 
 describe('the ready path of a didit_with_email join', () => {
-  it('keeps an approval read by status when hc-auth fails, retries the ready path on Continue and on status, and the next status completes it', async () => {
+  it("keeps an approval read by status when hc-auth fails, retries the ready path on status and on Continue within Continue's limit, and the next status completes it", async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
     const register = vi
@@ -762,6 +762,8 @@ describe('the ready path of a didit_with_email join', () => {
     const page = await pressContinue(request, token);
     expect(page.status).toBe(200);
     expect(page.headers.get('Content-Type')).toContain('text/html');
+    expect(register).toHaveBeenCalledTimes(2);
+    expect((await pressContinue(request, token)).status).toBe(503);
     expect(register).toHaveBeenCalledTimes(2);
     expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
 
