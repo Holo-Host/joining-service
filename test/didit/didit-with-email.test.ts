@@ -886,17 +886,17 @@ describe('GET /v1/didit/done/{credential}', () => {
     ['In Review', 'pending', 'Your verification is in review. After the review, the app continues by itself.'],
     ['Declined', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
     ['Expired', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
-    [undefined, 'pending', 'We could not find your verification. To start again, open the link in your email and press Continue.'],
+    ['forgotten', 'pending', 'We could not find your verification. To start again, open the link in your email and press Continue.'],
     ['Approved', 'pending', VERIFIED],
     ['Approved', 'ready', VERIFIED],
     ['In Progress', 'rejected', NO_ATTEMPTS_LEFT],
-  ])('shows where a %s verification stands in a %s join, whatever the query says', async (didStatus, joinStatus, text) => {
+  ])('shows where the %s verification stands in a %s join, whatever the query says', async (didStatus, joinStatus, text) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
     const { request, ctx, didit, session, token } = await joinedApp();
     await pressContinue(request, token);
-    if (didStatus) didit.sessions[0].status = didStatus;
-    else didit.sessions.splice(0, 1);
+    if (didStatus === 'forgotten') didit.sessions.splice(0, 1);
+    else didit.sessions[0].status = didStatus;
     later();
     if (joinStatus === 'ready') expect((await status(request, session)).status).toBe('ready');
     if (joinStatus === 'rejected') await ctx.sessionStore.update(session, { status: 'rejected', reason: NO_ATTEMPTS_LEFT });
