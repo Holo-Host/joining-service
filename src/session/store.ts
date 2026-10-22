@@ -101,8 +101,11 @@ export function isLinkSessionStore(store: SessionStore): store is LinkSessionSto
  * TTL, or the expiry of the `didit_with_email` challenge it holds.
  */
 export function pendingExpiresAt(session: SessionData, pendingTtlMs: number): number {
-  const link = session.challenges.find((cs) => cs.link);
-  return link ? link.expires_at : session.created_at + pendingTtlMs;
+  return linkExpiresAt(session) ?? session.created_at + pendingTtlMs;
+}
+
+export function linkExpiresAt(session: SessionData): number | undefined {
+  return session.challenges.find((cs) => cs.link)?.expires_at;
 }
 
 export function isExpired(session: SessionData, pendingTtlMs: number): boolean {

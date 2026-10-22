@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { SessionData, LinkSessionStore, ChallengeState } from './store.js';
-import { applyUpdate, isExpired, linkHashes, holdsLinkHash } from './store.js';
+import { applyUpdate, isExpired, linkExpiresAt, linkHashes, holdsLinkHash } from './store.js';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS sessions (
@@ -11,12 +11,13 @@ const SCHEMA = `
     claims TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     reason TEXT,
-    network TEXT
+    network TEXT,
+    link_expires_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_agent_key ON sessions(agent_key);
   CREATE TABLE IF NOT EXISTS link_tokens (
     hash TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_link_tokens_session ON link_tokens(session_id);
   CREATE TABLE IF NOT EXISTS events (
@@ -38,10 +39,9 @@ export class SqliteSessionStore implements LinkSessionStore {
   private stmtDelete: Database.Statement;
   private stmtFindByAgent: Database.Statement;
   private stmtFindByAgentScoped: Database.Statement;
-  private stmtCleanupCandidates: Database.Statement;
+  private stmtCleanup: Database.Statement;
   private stmtInsertLinkToken: Database.Statement;
   private stmtFindLinkToken: Database.Statement;
-  private stmtDeleteLinkTokens: Database.Statement;
   private stmtInsertEvent: Database.Statement;
   private stmtPruneEvents: Database.Statement;
   private stmtEventTimes: Database.Statement;
@@ -58,6 +58,10 @@ export class SqliteSessionStore implements LinkSessionStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    if (!columns.some((c) => c.name === 'link_expires_at')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN link_expires_at INTEGER');
+    }
     // Composite index for the exact-scope (agent_key, network) lookup that
     // backs join's uniqueness check.
     this.db.exec(
@@ -65,8 +69,8 @@ export class SqliteSessionStore implements LinkSessionStore {
     );
 
     this.stmtInsert = this.db.prepare(`
-      INSERT INTO sessions (id, agent_key, status, challenges, claims, created_at, reason, network)
-      VALUES (@id, @agent_key, @status, @challenges, @claims, @created_at, @reason, @network)
+      INSERT INTO sessions (id, agent_key, status, challenges, claims, created_at, reason, network, link_expires_at)
+      VALUES (@id, @agent_key, @status, @challenges, @claims, @created_at, @reason, @network, @link_expires_at)
     `);
 
     this.stmtGet = this.db.prepare(`
@@ -83,10 +87,8 @@ export class SqliteSessionStore implements LinkSessionStore {
       DELETE FROM sessions WHERE id = ?
     `);
 
-    // Live sessions only (ready never expires; pending must be within TTL --
-    // mirrors isExpired()), preferring a ready session over a pending one so
-    // an expired-but-not-yet-swept pending row on one network can't shadow a
-    // live ready session on another.
+    // Prefers a ready session, so a pending row on one network cannot shadow
+    // a ready session on another.
     this.stmtFindByAgent = this.db.prepare(`
       SELECT * FROM sessions
       WHERE agent_key = ? AND (status = 'ready' OR created_at >= ?)
@@ -100,16 +102,15 @@ export class SqliteSessionStore implements LinkSessionStore {
       SELECT * FROM sessions WHERE agent_key = ? AND network IS ? ORDER BY created_at DESC LIMIT 1
     `);
 
-    this.stmtCleanupCandidates = this.db.prepare(`
-      SELECT * FROM sessions WHERE
-        status != 'ready' AND created_at < ?
+    this.stmtCleanup = this.db.prepare(`
+      DELETE FROM sessions WHERE
+        status != 'ready' AND COALESCE(link_expires_at, created_at + ?) < ?
     `);
 
     this.stmtInsertLinkToken = this.db.prepare(
       'INSERT OR IGNORE INTO link_tokens (hash, session_id) VALUES (?, ?)',
     );
     this.stmtFindLinkToken = this.db.prepare('SELECT session_id FROM link_tokens WHERE hash = ?');
-    this.stmtDeleteLinkTokens = this.db.prepare('DELETE FROM link_tokens WHERE session_id = ?');
     this.stmtInsertEvent = this.db.prepare('INSERT INTO events (key, at, expires) VALUES (?, ?, ?)');
     this.stmtExpireEvents = this.db.prepare('DELETE FROM events WHERE expires <= ?');
     this.stmtPruneEvents = this.db.prepare('DELETE FROM events WHERE key = ? AND at <= ?');
@@ -129,6 +130,7 @@ export class SqliteSessionStore implements LinkSessionStore {
       created_at: data.created_at,
       reason: data.reason ?? null,
       network: data.network ?? null,
+      link_expires_at: linkExpiresAt(data) ?? null,
     });
     this.indexLinkHashes(data);
   }
@@ -143,7 +145,7 @@ export class SqliteSessionStore implements LinkSessionStore {
 
     const session = rowToSession(row);
     if (isExpired(session, this.pendingTtlMs)) {
-      this.remove(sessionId);
+      this.stmtDelete.run(sessionId);
       return null;
     }
     return session;
@@ -167,7 +169,7 @@ export class SqliteSessionStore implements LinkSessionStore {
   }
 
   async delete(sessionId: string): Promise<void> {
-    this.remove(sessionId);
+    this.stmtDelete.run(sessionId);
   }
 
   async findByAgentKey(agentKey: string, network?: string): Promise<SessionData | null> {
@@ -176,7 +178,7 @@ export class SqliteSessionStore implements LinkSessionStore {
 
     const session = rowToSession(row);
     if (isExpired(session, this.pendingTtlMs)) {
-      this.remove(session.id);
+      this.stmtDelete.run(session.id);
       return null;
     }
     return session;
@@ -214,15 +216,8 @@ export class SqliteSessionStore implements LinkSessionStore {
     for (const key of keys) this.stmtRemoveEvent.run(key, at);
   }
 
-  /**
-   * Deletes expired sessions older than the pending TTL. A session holding a
-   * link challenge lives as long as the challenge.
-   */
   cleanup(): void {
-    const rows = this.stmtCleanupCandidates.all(Date.now() - this.pendingTtlMs) as RawRow[];
-    for (const row of rows) {
-      if (isExpired(rowToSession(row), this.pendingTtlMs)) this.remove(row.id);
-    }
+    this.stmtCleanup.run(this.pendingTtlMs, Date.now());
   }
 
   close(): void {
@@ -231,11 +226,6 @@ export class SqliteSessionStore implements LinkSessionStore {
 
   private indexLinkHashes(session: SessionData): void {
     for (const hash of linkHashes(session)) this.stmtInsertLinkToken.run(hash, session.id);
-  }
-
-  private remove(sessionId: string): void {
-    this.stmtDelete.run(sessionId);
-    this.stmtDeleteLinkTokens.run(sessionId);
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -299,8 +300,10 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     vi.useRealTimers();
   });
 
-  it('drops events past their own TTL, keeps a live link session older than the pending TTL, and removes it once expired', async () => {
-    const store = new SqliteSessionStore(':memory:', TTL_SECONDS);
+  it('drops events past their own TTL, keeps a live link session older than the pending TTL, and removes it and its link tokens once expired', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'session-links-'));
+    const dbPath = join(dir, 'links.db');
+    const store = new SqliteSessionStore(dbPath, TTL_SECONDS);
     await store.create(session());
     await store.reserveEvents(['agent:k'], NOW, TTL_MS, () => 0);
     vi.setSystemTime(NOW + 2 * TTL_MS);
@@ -314,8 +317,11 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     store.cleanup();
     vi.setSystemTime(NOW);
     expect(await store.get('js_link')).toBeNull();
-    expect(await store.findByLinkHash('hash_1')).toBeNull();
     store.close();
+    const db = new Database(dbPath);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM link_tokens').get()).toEqual({ n: 0 });
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('gives back a KV event that a list does not show yet', async () => {
