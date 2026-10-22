@@ -28,7 +28,8 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const CONTINUE_SPACING_MS = 10_000;
 const CONTINUES_PER_HOUR = 10;
-const NEW_SESSIONS_KEY = 'didit_create';
+const BILLED_SESSIONS_KEY = 'didit_create';
+const BILLED_STATUSES = new Set(['Approved', 'Declined', 'In Review']);
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 /** One printable ASCII address with no space, display name, list separator, quoting or path separator, as one recipient for every provider. */
 const PLAIN_EMAIL_RE = /^[!#-'*+\-.0-9=?A-Z^-~]+@[!#-'*+\-.0-9=?A-Z^-~]+$/;
@@ -262,7 +263,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       if (!(await this.allow(`didit_read:${session.id}:${cs.challenge.id}`, Date.now(), 1, interval))) continue;
       read = true;
       try {
-        this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
+        await this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
       } catch (err) {
         if (!(err instanceof DiditUnavailableError)) throw err;
         cs.link!.attempt = { ...attempt, read_at: Date.now() };
@@ -291,7 +292,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   private async continueRecorded(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome | undefined> {
     const attempt = cs.link!.attempt;
     if (!attempt || attempt.gone) return undefined;
-    const reading = this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
+    const reading = await this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
     if (reading === 'approved' || reading === 'in_review') {
       await this.save(session);
       return { kind: reading };
@@ -362,29 +363,21 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       });
       return { kind: 'rejected' };
     }
-    const now = Date.now();
-    if (!(await this.allow(NEW_SESSIONS_KEY, now, this.config.max_sessions_per_day, DAY_MS))) {
-      console.error(`[didit_with_email] new Didit sessions in 24 hours reach didit.max_sessions_per_day of ${this.config.max_sessions_per_day}`);
+    if ((await this.eventCount(BILLED_SESSIONS_KEY, Date.now(), DAY_MS)) >= this.config.max_sessions_per_day) {
+      console.error(`[didit_with_email] billed Didit sessions in 24 hours reach didit.max_sessions_per_day of ${this.config.max_sessions_per_day}`);
       return { kind: 'unavailable' };
     }
-    return this.open(session, cs, () =>
-      storeStep('give back a new Didit session', () => this.store.removeEvents([NEW_SESSIONS_KEY], now)),
-    );
+    return this.open(session, cs);
   }
 
   /** Creates a session, or takes over the email's open one, and records it on the challenge. */
-  private async open(session: SessionData, cs: ChallengeState, createFailed?: () => Promise<void>): Promise<ContinueOutcome> {
+  private async open(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
     const link = cs.link!;
-    const created = await this.client
-      .createSession({
-        vendorData: link.subject_id,
-        callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
-        agentKey: session.agent_key,
-      })
-      .catch(async (err: unknown) => {
-        await createFailed?.().catch(() => {});
-        throw err;
-      });
+    const created = await this.client.createSession({
+      vendorData: link.subject_id,
+      callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
+      agentKey: session.agent_key,
+    });
     const now = Date.now();
     const prev = link.attempt;
     const same = prev?.session_id === created.session_id;
@@ -401,10 +394,11 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   /** Applies a read of the recorded session. One that is gone or not this join's is forgotten. */
-  private applyRecorded(session: SessionData, cs: ChallengeState, decision: Decision | null): Reading {
+  private async applyRecorded(session: SessionData, cs: ChallengeState, decision: Decision | null): Promise<Reading> {
     const link = cs.link!;
-    const reading = this.reading(session, link, link.attempt!.session_id, decision);
-    const attempt: DiditAttempt = { ...link.attempt!, read_at: Date.now() };
+    const prev = link.attempt!;
+    const reading = this.reading(session, link, prev.session_id, decision);
+    const attempt: DiditAttempt = { ...prev, read_at: Date.now() };
     link.attempt = attempt;
     if (reading === 'gone') {
       attempt.gone = true;
@@ -413,6 +407,11 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       attempt.status = decision!.status;
       if (reading === 'approved') approve(cs);
       else setState(cs, stateOf(decision!.status)!);
+    }
+    if (BILLED_STATUSES.has(attempt.status) && !BILLED_STATUSES.has(prev.status)) {
+      // A key per session counts it once, even when the status this read found is never saved.
+      const keys = [`didit_billed:${attempt.session_id}`, BILLED_SESSIONS_KEY];
+      await this.store.reserveEvents(keys, attempt.read_at, this.config.link_ttl_seconds * 1000, ([seen]) => seen.length);
     }
     return reading;
   }
@@ -521,10 +520,20 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {
       const clears = [now];
       if (times.length >= count) clears.push(times[times.length - count] + windowMs);
-      if (spacingMs > 0 && times.length > 0) clears.push(times[times.length - 1] + spacingMs);
+      if (times.length > 0) clears.push(times[times.length - 1] + spacingMs);
       return Math.max(...clears) - now;
     });
     return wait <= 0;
+  }
+
+  /** The events under `key` within the last `windowMs`, read through a reservation that refuses, so it records nothing. */
+  private async eventCount(key: string, now: number, windowMs: number): Promise<number> {
+    let count = 0;
+    await this.store.reserveEvents([key], now, windowMs, ([times]) => {
+      count = times.length;
+      return 1;
+    });
+    return count;
   }
 
   private async findByHash(

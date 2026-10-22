@@ -1263,8 +1263,8 @@ Challenge sent to client. `group` is present only in an `any_of` group, and stat
 - **Read interval.** Status, resume and the done page read a decision at most once per interval, however many of them arrive at once: 15 seconds while the session is open, 60 seconds in review, and 300 seconds after a decline or expiry. An approved session is never read again. A failed read counts as a read, so that session waits its interval before the next. Continue ignores this interval, since it decides which session the browser goes to.
 - **Expiry.** The challenge and its session expire `didit.link_ttl_seconds` after the join.
 - **Email limits.** At most `didit.max_emails_per_address` emails to one address and `didit.max_emails_per_agent` for one agent key in 24 hours, at least `didit.resend_interval_seconds` apart for one address. A refusal answers `429 rate_limited` with `Retry-After`, which for an agent key over its limit is that key's wait alone. Neither a refused email nor one that fails to send counts.
-- **New sessions.** A stack opens at most `didit.max_sessions_per_day` new Didit sessions in 24 hours, counted in its session store, so with the memory store each process counts its own. Reusing an email's open session does not count, and a create that fails gives its count back. Past the limit, Continue answers the unavailable page and logs `didit.max_sessions_per_day`.
-- **Limits on the Cloudflare KV store.** Each counted event is a KV key of its own, and KV can take 60 seconds or more to list a new key. So emails, Continue presses, decision reads and new sessions close together in time can each pass their limit, and ones made at the same moment can each be refused. The rule that a link's progress never goes back holds there only at best: KV has no compare-and-swap and can serve a stale read.
+- **Billed sessions.** A stack opens no new Didit session once its reads found `didit.max_sessions_per_day` sessions billed in the last 24 hours. Its session store counts them, so with the memory store each process counts its own. A session counts once, the first time a read of a join's recorded session finds it `In Review`, `Approved` or `Declined`, which is when Didit bills it. A billed session that status, resume, the done page and Continue never read again does not count. Past the limit, Continue answers the unavailable page and logs `didit.max_sessions_per_day`. Sessions already open at the limit can still finish and be billed.
+- **Limits on the Cloudflare KV store.** Each counted event is a KV key of its own, and KV can take 60 seconds or more to list a new key. So emails, Continue presses, decision reads and billed sessions close together in time can each pass their limit, and ones made at the same moment can each be refused. The rule that a link's progress never goes back holds there only at best: KV has no compare-and-swap and can serve a stale read.
 
 Config:
 ```json
@@ -1290,7 +1290,7 @@ Config:
 | `workflow_id` | string | yes | The Didit workflow UUID |
 | `environment` | `"live"` \| `"sandbox"` | yes | Must match the environment of the Didit application that `api_key` belongs to |
 | `max_sessions_per_email` | number | no | Didit sessions one email can open, across every agent key. Default: 3 |
-| `max_sessions_per_day` | number | no | New Didit sessions a stack opens in 24 hours. Default: 100 |
+| `max_sessions_per_day` | number | no | Didit sessions found billed in 24 hours after which a stack opens no new one. Default: 100 |
 | `link_ttl_seconds` | number | no | How long the challenge and its links last. Default: 604800 (7 days) |
 | `resend_interval_seconds` | number | no | Least time between two emails to one address. Default: 60 |
 | `max_emails_per_address` | number | no | Emails to one address in 24 hours. Default: 5 |
