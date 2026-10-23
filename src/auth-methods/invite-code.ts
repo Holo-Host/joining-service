@@ -49,4 +49,8 @@ export class InviteCodeAuthMethod implements AuthMethodPlugin {
 
     return { passed: false, reason: 'Invalid or already-used invite code' };
   }
+
+  restore(code: string): void {
+    this.validCodes.add(code);
+  }
 }

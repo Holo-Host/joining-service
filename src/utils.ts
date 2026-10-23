@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { blake2b } from '@noble/hashes/blake2.js';
+import * as ed from '@noble/ed25519';
 
 export function generateSessionId(): string {
   return `js_${randomBytes(16).toString('hex')}`;
@@ -76,6 +77,23 @@ export function agentKeyToRawEd25519Base64url(agentKey: string): string {
     throw new Error(`agentKey must be 39 bytes, got ${bytes.length}`);
   }
   return Buffer.from(bytes.slice(3, 35)).toString('base64url');
+}
+
+/**
+ * An agent key whose string is its one canonical encoding, carrying the DHT
+ * location of its core key, which must be a curve point with no small order:
+ * a small-order key verifies a fixed signature for any message.
+ */
+export function isCanonicalAgentKey(agentKey: string): boolean {
+  if (!/^u[A-Za-z0-9_-]{52}$/.test(agentKey) || !validateAgentKey(agentKey).valid) return false;
+  const bytes = decodeHashFromBase64(agentKey);
+  const core = bytes.slice(3, 35);
+  if (!dhtLocationFrom32(core).every((b, i) => b === bytes[35 + i])) return false;
+  try {
+    return !ed.Point.fromHex(core).isSmallOrder();
+  } catch {
+    return false;
+  }
 }
 
 export function validateAgentKey(agentKey: string): {

@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { AuthMethodEntry, AuthMethod } from '../../types.js';
 import type { ClaimsSubmittedDetail } from '../joining-claims-form.js';
+import { LINK_CLAIM_INPUT } from '../link-challenge.js';
 
 // Shoelace component imports (side-effect: registers custom elements)
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -37,6 +38,7 @@ const CLAIM_INPUT: Record<string, { label: string; type: string; placeholder: st
     claimKey: 'phone',
     description: 'To join this network, please provide your phone number. A verification code will be sent to you.',
   },
+  didit_with_email: LINK_CLAIM_INPUT,
 };
 
 @customElement('joining-claims-form-sl')

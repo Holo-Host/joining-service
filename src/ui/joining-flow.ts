@@ -5,6 +5,8 @@ import type { AuthMethodEntry, Challenge, JoinProvision } from '../types.js';
 import type { JoiningStatusValue } from './joining-status.js';
 import type { ClaimsSubmittedDetail } from './joining-claims-form.js';
 import type { ChallengeResponseDetail } from './joining-challenge-dialog.js';
+import type { SignTimestamp } from '../client/joining.js';
+import { LINK_CHALLENGE_TYPE, type ChallengeResendDetail } from './link-challenge.js';
 
 // Side-effect imports to register custom elements
 import './joining-claims-form.js';
@@ -58,6 +60,10 @@ export class JoiningFlow extends LitElement {
   @property({ attribute: false })
   signNonce?: (nonce: Uint8Array) => Promise<Uint8Array>;
 
+  /** Signs the join. Required by services that offer `didit_with_email`. */
+  @property({ attribute: false })
+  signTimestamp?: SignTimestamp;
+
   /** Pre-filled claims. If provided, skips the claims form for matching methods. */
   @property({ attribute: false })
   claims?: Record<string, string>;
@@ -84,6 +90,18 @@ export class JoiningFlow extends LitElement {
   @state()
   protected pendingChallengeResolve: ((response: string) => void) | null = null;
 
+  /** Why the last resend of a link email failed. */
+  @state()
+  protected resendNotice?: string;
+
+  @state()
+  protected pollNotice?: string;
+
+  private activeSession?: JoinSession;
+
+  /** Moves when a flow starts or fails, so a loop left from an earlier flow stops. */
+  private run = 0;
+
   /** Disable shadow DOM for external styling. Subclasses may re-enable. */
   protected override createRenderRoot(): HTMLElement | ShadowRoot {
     return this;
@@ -91,19 +109,22 @@ export class JoiningFlow extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    if (this.serviceUrl || this.joiningClient) {
+    // Moving the element disconnects and reconnects it.
+    if ((this.serviceUrl || this.joiningClient) && this.flowStatus === 'idle') {
       this.start();
     }
   }
 
   /** Start or restart the joining flow. */
   async start() {
+    const run = ++this.run;
     try {
       this.flowStatus = 'connecting';
       this.statusReason = undefined;
+      this.endChallenges();
 
       const client = this.getClient();
-      const info = await client.getInfo();
+      const info = await this.forRun(run, client.getInfo());
       this.authMethods = info.auth_methods;
 
       // Check if all methods are automatic (no UI needed)
@@ -117,9 +138,9 @@ export class JoiningFlow extends LitElement {
 
       // Use pre-filled claims or empty
       this.collectedClaims = this.claims ?? {};
-      await this.executeJoin(client);
+      await this.executeJoin(client, run);
     } catch (e) {
-      this.handleError(e);
+      this.failIfCurrent(run, e);
     }
   }
 
@@ -156,39 +177,44 @@ export class JoiningFlow extends LitElement {
     return true;
   }
 
-  protected async executeJoin(client: JoiningClient) {
+  protected async executeJoin(client: JoiningClient, run = this.run) {
     if (!this.agentKey) {
       throw new Error('agent-key must be provided');
     }
 
     this.flowStatus = 'joining';
-    let session = await client.join(this.agentKey, this.collectedClaims);
+    let session = await this.forRun(run, client.join(this.agentKey, this.collectedClaims, undefined, this.signTimestamp));
 
     const satisfiedGroups = new Set<string>();
     let pollCount = 0;
 
     while (session.status === 'pending') {
       this.flowStatus = 'verifying';
+      this.activeSession = session;
 
       if (!session.challenges || session.challenges.length === 0) {
         if (++pollCount > this.maxPollAttempts) {
           throw new Error('Verification timed out. Please try again.');
         }
-        await delay(session.pollIntervalMs ?? 2000);
-        session = await session.pollStatus();
+        await this.forRun(run, delay(session.pollIntervalMs ?? 2000));
+        session = await this.forRun(run, session.pollStatus());
         continue;
       }
 
+      const isOpen = (c: Challenge) => !c.completed && !(c.group && satisfiedGroups.has(c.group));
+      const link = session.challenges.find((c) => c.type === LINK_CHALLENGE_TYPE && isOpen(c));
       let madeProgress = false;
 
       for (const challenge of session.challenges) {
-        if (challenge.completed) continue;
-        if (challenge.group && satisfiedGroups.has(challenge.group)) continue;
+        if (!isOpen(challenge)) continue;
+        // Left to the link's poll below, which runs once nothing else can act.
+        // The status it reads also settles hc_auth_approval.
+        if (challenge.type === LINK_CHALLENGE_TYPE || (link && challenge.type === 'hc_auth_approval')) continue;
 
         if (challenge.type === 'agent_allow_list') {
-          const response = await this.handleAgentAllowList(challenge);
+          const response = await this.forRun(run, this.handleAgentAllowList(challenge));
           if (response) {
-            session = await session.verify(challenge.id, response);
+            session = await this.forRun(run, session.verify(challenge.id, response));
             if (challenge.group) satisfiedGroups.add(challenge.group);
             madeProgress = true;
             break;
@@ -197,14 +223,13 @@ export class JoiningFlow extends LitElement {
         }
 
         if (challenge.type === 'hc_auth_approval') {
-          // Polling type: show waiting UI, poll for resolution
           this.currentChallenge = challenge;
           if (++pollCount > this.maxPollAttempts) {
             this.currentChallenge = null;
             throw new Error('Verification timed out. Please try again.');
           }
-          await delay(session.pollIntervalMs ?? 2000);
-          session = await session.pollStatus();
+          await this.forRun(run, delay(session.pollIntervalMs ?? 2000));
+          session = await this.forRun(run, session.pollStatus());
           this.currentChallenge = null;
           madeProgress = true;
           break;
@@ -212,21 +237,41 @@ export class JoiningFlow extends LitElement {
 
         // Interactive challenge: prompt user (resets poll count since user is active)
         pollCount = 0;
-        const response = await this.promptForChallenge(challenge);
-        session = await session.verify(challenge.id, response);
+        const response = await this.forRun(run, this.promptForChallenge(challenge));
+        session = await this.forRun(run, session.verify(challenge.id, response));
         if (challenge.group) satisfiedGroups.add(challenge.group);
         madeProgress = true;
         break;
       }
 
-      if (!madeProgress) {
+      if (!madeProgress && link) {
+        // No attempt cap, since the person may take days.
+        this.currentChallenge = link;
+        await this.forRun(run, delay(session.pollIntervalMs ?? 5000));
+        if (!this.isConnected) {
+          this.endChallenges();
+          this.flowStatus = 'idle';
+          return;
+        }
+        const [polled] = await this.forRun(run, Promise.allSettled([session.pollStatus()]));
+        if (polled.status === 'fulfilled') {
+          session = polled.value;
+          this.pollNotice = undefined;
+        } else {
+          if (!isTransient(polled.reason)) throw polled.reason;
+          console.warn('[joining-flow] status poll failed, retrying:', polled.reason);
+          this.pollNotice = 'The joining service is unavailable. Retrying.';
+        }
+      } else if (!madeProgress) {
         if (++pollCount > this.maxPollAttempts) {
           throw new Error('Verification timed out. Please try again.');
         }
-        await delay(session.pollIntervalMs ?? 2000);
-        session = await session.pollStatus();
+        await this.forRun(run, delay(session.pollIntervalMs ?? 2000));
+        session = await this.forRun(run, session.pollStatus());
       }
     }
+
+    this.endChallenges();
 
     if (session.status === 'rejected') {
       this.flowStatus = 'rejected';
@@ -242,7 +287,7 @@ export class JoiningFlow extends LitElement {
     }
 
     this.flowStatus = 'provisioning';
-    const provision = await session.getProvision();
+    const provision = await this.forRun(run, session.getProvision());
 
     this.flowStatus = 'ready';
     this.dispatchEvent(
@@ -252,6 +297,20 @@ export class JoiningFlow extends LitElement {
         composed: true,
       }),
     );
+  }
+
+  /** `pending`'s value, unless the flow restarted or failed meanwhile: then it throws, and `failIfCurrent` drops the error. */
+  private async forRun<T>(run: number, pending: Promise<T>): Promise<T> {
+    const value = await pending;
+    if (run !== this.run) throw new Error('This flow was restarted or failed');
+    return value;
+  }
+
+  private endChallenges() {
+    this.currentChallenge = null;
+    this.activeSession = undefined;
+    this.pollNotice = undefined;
+    this.resendNotice = undefined;
   }
 
   private async handleAgentAllowList(challenge: Challenge): Promise<string | null> {
@@ -275,7 +334,8 @@ export class JoiningFlow extends LitElement {
   protected handleClaimsSubmitted(e: CustomEvent<ClaimsSubmittedDetail>) {
     this.collectedClaims = e.detail.claims;
     const client = this.getClient();
-    this.executeJoin(client).catch((err) => this.handleError(err));
+    const run = this.run;
+    this.executeJoin(client, run).catch((err) => this.failIfCurrent(run, err));
   }
 
   protected handleChallengeResponse(e: CustomEvent<ChallengeResponseDetail>) {
@@ -286,11 +346,31 @@ export class JoiningFlow extends LitElement {
     }
   }
 
+  protected async handleChallengeResend(e: CustomEvent<ChallengeResendDetail>) {
+    const session = this.activeSession;
+    if (!session) return;
+    const [resent] = await Promise.allSettled([session.resend(e.detail.challengeId)]);
+    if (this.activeSession?.sessionToken !== session.sessionToken) return;
+    if (resent.status === 'rejected') {
+      this.resendNotice = resent.reason instanceof Error ? resent.reason.message : String(resent.reason);
+      return;
+    }
+    this.resendNotice = undefined;
+    this.currentChallenge =
+      resent.value.challenges?.find((c) => c.id === e.detail.challengeId) ?? this.currentChallenge;
+  }
+
   protected handleRetry() {
     this.start();
   }
 
+  private failIfCurrent(run: number, e: unknown) {
+    if (run === this.run) this.handleError(e);
+  }
+
   protected handleError(e: unknown) {
+    this.run++;
+    this.endChallenges();
     const error = e instanceof Error ? e : new Error(String(e));
     this.flowStatus =
       error instanceof JoiningError && error.code === 'join_rejected'
@@ -330,7 +410,9 @@ export class JoiningFlow extends LitElement {
               <joining-challenge-dialog
                 .challenge=${this.currentChallenge}
                 .open=${true}
+                .notice=${this.pollNotice ?? this.resendNotice}
                 @challenge-response=${this.handleChallengeResponse}
+                @challenge-resend=${this.handleChallengeResend}
                 @challenge-cancelled=${() => this.handleError(new Error('Challenge cancelled'))}
               ></joining-challenge-dialog>
             `
@@ -338,6 +420,11 @@ export class JoiningFlow extends LitElement {
       </div>
     `;
   }
+}
+
+/** A 5xx, or no answer at all, which fetch reports as a TypeError. */
+function isTransient(err: unknown): boolean {
+  return err instanceof JoiningError ? err.httpStatus >= 500 : err instanceof TypeError;
 }
 
 function delay(ms: number): Promise<void> {

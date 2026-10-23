@@ -191,7 +191,7 @@ describe('Reconnect flow', () => {
     expect(body.session).toBeUndefined();
   });
 
-  it('reconnect for unknown agent returns 403', async () => {
+  it('reconnect for unknown agent returns 403, and only to a caller that signs for the key', async () => {
     const { request } = await createTestApp({
       reconnect: { enabled: true },
     });
@@ -219,9 +219,20 @@ describe('Reconnect flow', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error.code).toBe('agent_not_joined');
+
+    const forged = await request('/v1/reconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_key: agentKey, timestamp, signature: Buffer.alloc(64).toString('base64') }),
+    });
+    expect((await forged.json()).error.code).toBe('invalid_signature');
   });
 
-  it('reconnect with stale timestamp returns 400', async () => {
+  it.each([
+    ['a stale timestamp', () => new Date(Date.now() - 600_000).toISOString()],
+    ['a timestamp more than 30 seconds ahead', () => new Date(Date.now() + 31_000).toISOString()],
+    ['a resume message, which Date.parse reads as a date', () => `resume:${new Date().toUTCString()}`],
+  ])('reconnect with %s returns 400', async (_name, timestampNow) => {
     const { request } = await createTestApp({
       reconnect: { enabled: true, timestamp_tolerance_seconds: 300 },
     });
@@ -237,10 +248,9 @@ describe('Reconnect flow', () => {
       body: JSON.stringify({ agent_key: agentKey }),
     });
 
-    // Timestamp 10 minutes ago (beyond 5 min tolerance)
-    const staleTs = new Date(Date.now() - 600_000).toISOString();
+    const timestamp = timestampNow();
     const sig = await ed.signAsync(
-      new TextEncoder().encode(staleTs),
+      new TextEncoder().encode(timestamp),
       privateKey,
     );
 
@@ -249,7 +259,7 @@ describe('Reconnect flow', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         agent_key: agentKey,
-        timestamp: staleTs,
+        timestamp,
         signature: Buffer.from(sig).toString('base64'),
       }),
     });

@@ -6,6 +6,19 @@ export interface JoinContext {
   network?: NetworkRecord;
 }
 
+/** Answers the request with this error. During a join, any other throw from a method only rules that method out. */
+export class JoinRequestError extends Error {
+  constructor(
+    readonly status: 400 | 429 | 503,
+    readonly code: string,
+    message: string,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = 'JoinRequestError';
+  }
+}
+
 export interface AuthMethodPlugin {
   type: string;
 

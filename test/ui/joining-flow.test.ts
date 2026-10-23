@@ -220,6 +220,34 @@ describe('JoiningFlow', () => {
     expect((el as any).flowStatus).toBe('rejected');
   });
 
+  it('stops waiting for hc-auth approval once its dialog is cancelled', async () => {
+    const challenge = { id: 'ch_hc', type: 'hc_auth_approval', description: 'Waiting for approval' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ happ: { id: 't', name: 'T' }, auth_methods: ['hc_auth_approval'] }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ session: 'js_hc', status: 'pending', challenges: [challenge], poll_interval_ms: 1 }, 201),
+    );
+    let answer!: (res: Response) => void;
+    mockFetch.mockReturnValueOnce(new Promise<Response>((resolve) => (answer = resolve)));
+    mockFetch.mockRejectedValue(new TypeError('no answer queued'));
+    const el = createFlow({ claims: { hc_auth_approval: 'ada@example.com' } });
+    const errors: JoinErrorDetail[] = [];
+    el.addEventListener('join-error', ((e: CustomEvent<JoinErrorDetail>) => {
+      errors.push(e.detail);
+    }) as EventListener);
+    document.body.appendChild(el);
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+    await el.updateComplete;
+
+    el.querySelector('joining-challenge-dialog')!.dispatchEvent(new CustomEvent('challenge-cancelled'));
+    answer(jsonResponse({ status: 'pending', challenges: [challenge], poll_interval_ms: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await el.updateComplete;
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(el.querySelector('joining-challenge-dialog')).toBeNull();
+    expect(errors).toHaveLength(1);
+    el.remove();
+  });
+
   it('emits join-error on network failure', async () => {
     mockFetch.mockRejectedValueOnce(new Error('Network error'));
 

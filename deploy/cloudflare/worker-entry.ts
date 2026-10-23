@@ -98,7 +98,7 @@ export default {
     const urlProvider = new KvUrlProvider(env.SESSIONS, linkerRegistrationStore);
 
     const emailTransport = buildEmailTransport(config);
-    const authPlugins = buildAuthPlugins(config, { emailTransport, hcAuthClient, allowedAgentStore });
+    const authPlugins = buildAuthPlugins(config, { emailTransport, hcAuthClient, allowedAgentStore, sessionStore });
 
     let proofGenerator: MembraneProofGenerator | undefined;
     if (config.membrane_proof?.enabled) {

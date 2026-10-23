@@ -1,13 +1,16 @@
-import type { SessionData, SessionStore } from './store.js';
+import type { LinkSessionStore, SessionData } from './store.js';
+import { applyUpdate, isExpired, linkHashes, holdsLinkHash, withoutOne } from './store.js';
 
 /** Composite agent-index key: session uniqueness is per (agent, network). */
 function agentIndexKey(agentKey: string, network?: string): string {
   return `${agentKey}\0${network ?? ''}`;
 }
 
-export class MemorySessionStore implements SessionStore {
+export class MemorySessionStore implements LinkSessionStore {
   private sessions = new Map<string, SessionData>();
   private agentIndex = new Map<string, string>();
+  private linkIndex = new Map<string, string>();
+  private events = new Map<string, number[]>();
   private pendingTtlMs: number;
 
   constructor(pendingTtlSeconds = 86400) {
@@ -17,14 +20,14 @@ export class MemorySessionStore implements SessionStore {
   async create(data: SessionData): Promise<void> {
     this.sessions.set(data.id, { ...data });
     this.agentIndex.set(agentIndexKey(data.agent_key, data.network), data.id);
+    this.indexLinkHashes(data);
   }
 
   async get(sessionId: string): Promise<SessionData | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
-    if (this.isExpired(session)) {
-      this.sessions.delete(sessionId);
-      this.agentIndex.delete(agentIndexKey(session.agent_key, session.network));
+    if (isExpired(session, this.pendingTtlMs)) {
+      this.remove(session);
       return null;
     }
     return { ...session };
@@ -36,15 +39,14 @@ export class MemorySessionStore implements SessionStore {
   ): Promise<void> {
     const existing = this.sessions.get(sessionId);
     if (!existing) return;
-    this.sessions.set(sessionId, { ...existing, ...data });
+    const updated = applyUpdate(existing, data);
+    this.sessions.set(sessionId, updated);
+    this.indexLinkHashes(updated);
   }
 
   async delete(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (session) {
-      this.agentIndex.delete(agentIndexKey(session.agent_key, session.network));
-    }
-    this.sessions.delete(sessionId);
+    if (session) this.remove(session);
   }
 
   async findByAgentKey(agentKey: string, network?: string): Promise<SessionData | null> {
@@ -77,9 +79,35 @@ export class MemorySessionStore implements SessionStore {
     return best;
   }
 
-  /** Ready sessions never expire; pending sessions use the configured TTL. */
-  private isExpired(session: SessionData): boolean {
-    if (session.status === 'ready') return false;
-    return Date.now() - session.created_at > this.pendingTtlMs;
+  async findByLinkHash(hash: string): Promise<SessionData | null> {
+    const sessionId = this.linkIndex.get(hash);
+    const session = sessionId ? await this.get(sessionId) : null;
+    return holdsLinkHash(session, hash) ? session : null;
+  }
+
+  async reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number> {
+    const earlier = keys.map((key) => (this.events.get(key) ?? []).filter((t) => t > at - ttlMs));
+    const delay = wait(earlier);
+    if (delay > 0) return delay;
+    keys.forEach((key, i) => this.events.set(key, [...earlier[i], at]));
+    return 0;
+  }
+
+  async removeEvents(keys: string[], at: number): Promise<void> {
+    for (const key of keys) {
+      const left = withoutOne(this.events.get(key) ?? [], at);
+      if (left.length > 0) this.events.set(key, left);
+      else this.events.delete(key);
+    }
+  }
+
+  private indexLinkHashes(session: SessionData): void {
+    for (const hash of linkHashes(session)) this.linkIndex.set(hash, session.id);
+  }
+
+  private remove(session: SessionData): void {
+    this.sessions.delete(session.id);
+    this.agentIndex.delete(agentIndexKey(session.agent_key, session.network));
+    for (const hash of linkHashes(session)) this.linkIndex.delete(hash);
   }
 }
