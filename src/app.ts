@@ -66,6 +66,25 @@ class ServiceUnavailableError extends Error {
   }
 }
 
+/**
+ * The session claims selected by `hc_auth.forward_claims`. They go into the
+ * public request-auth metadata and, separately, into the admin-only
+ * `verified` field, which is the only one downstream services trust.
+ */
+function forwardedClaims(
+  ctx: ServiceContext,
+  claims?: Record<string, string>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const forwardKeys = ctx.config.hc_auth?.forward_claims;
+  if (forwardKeys && claims) {
+    for (const key of forwardKeys) {
+      if (claims[key]) out[key] = claims[key];
+    }
+  }
+  return out;
+}
+
 async function notifyHcAuth(
   ctx: ServiceContext,
   agentKey: string,
@@ -73,23 +92,15 @@ async function notifyHcAuth(
 ): Promise<void> {
   if (!ctx.hcAuthClient) return;
   const rawKey = agentKeyToRawEd25519Base64url(agentKey);
+  const verifiedClaims = forwardedClaims(ctx, claims);
   const metadata: Record<string, unknown> = {
     agent_key: agentKey,
     happ_id: ctx.config.happ.id,
+    ...verifiedClaims,
   };
 
-  // Forward configured claim keys (e.g. email, phone) to hc-auth metadata
-  const forwardKeys = ctx.config.hc_auth?.forward_claims;
-  if (forwardKeys && claims) {
-    for (const key of forwardKeys) {
-      if (claims[key]) {
-        metadata[key] = claims[key];
-      }
-    }
-  }
-
   try {
-    await ctx.hcAuthClient.registerAndAuthorize(rawKey, metadata);
+    await ctx.hcAuthClient.registerAndAuthorize(rawKey, metadata, verifiedClaims);
   } catch (err) {
     if (ctx.config.hc_auth?.required) {
       // The agent's own credentials were fine -- this is our downstream
@@ -98,6 +109,30 @@ async function notifyHcAuth(
       throw new ServiceUnavailableError('Auth service registration failed', err);
     }
     console.error('[hc-auth] registerAndAuthorize failed (non-fatal):', err);
+  }
+}
+
+/**
+ * Write only the `verified` claims. Used when `hc_auth_approval` is in the
+ * method set: the operator (or hc-auth itself) decides authorization, so the
+ * service must not call registerAndAuthorize, but the claims the other
+ * methods proved must still reach the trusted field on every ready join.
+ */
+async function writeVerifiedClaims(
+  ctx: ServiceContext,
+  agentKey: string,
+  claims?: Record<string, string>,
+): Promise<void> {
+  if (!ctx.hcAuthClient) return;
+  const verifiedClaims = forwardedClaims(ctx, claims);
+  if (Object.keys(verifiedClaims).length === 0) return;
+  try {
+    await ctx.hcAuthClient.setVerified(agentKeyToRawEd25519Base64url(agentKey), verifiedClaims);
+  } catch (err) {
+    if (ctx.config.hc_auth?.required) {
+      throw new ServiceUnavailableError('Auth service verified write failed', err);
+    }
+    console.error('[hc-auth] setVerified failed (non-fatal):', err);
   }
 }
 
@@ -172,7 +207,9 @@ async function notifyReady(
   claims: Record<string, string>,
   challenges: ChallengeState[],
 ): Promise<void> {
-  if (!usedHcAuthApproval(challenges)) {
+  if (usedHcAuthApproval(challenges)) {
+    await writeVerifiedClaims(ctx, agentKey, claims);
+  } else {
     await notifyHcAuth(ctx, agentKey, claims);
   }
   await notifyLinkers(ctx, agentKey);
