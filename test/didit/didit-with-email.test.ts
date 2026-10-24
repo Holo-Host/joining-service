@@ -109,6 +109,14 @@ function later(ms = 301_000) {
   vi.setSystemTime(Date.now() + ms);
 }
 
+function linkersAt(urls: string[]): UrlProvider {
+  return {
+    getLinkerRegistrations: async () =>
+      urls.map((url, i) => ({ linker_url: { url: `wss://l${i + 1}.example.com:8090` }, admin: { url, secret: `s${i}` } })),
+    getHttpGateways: async () => undefined,
+  };
+}
+
 describe('didit_with_email join', () => {
   it('emails one link under base_url to the trimmed address, naming the network, the short agent key and the expiry, and calls no Didit', async () => {
     const { request, emails, didit } = await diditApp();
@@ -778,7 +786,7 @@ describe('the ready path of a didit_with_email join', () => {
     didit.sessions[0].status = 'Approved';
     later();
 
-    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ completed: true, metadata: { state: 'approved' } }] });
     const stored = (await ctx.sessionStore.get(session))!;
     expect(stored.status).toBe('pending');
     expect(stored.challenges[0].completed).toBe(true);
@@ -797,15 +805,38 @@ describe('the ready path of a didit_with_email join', () => {
     expect(register).toHaveBeenCalledTimes(3);
   });
 
+  it.each<[string, Partial<ServiceConfig>, HcAuthClient | undefined, string]>([
+    ['hc-auth', { hc_auth: HC }, new HcAuthClient(HC), `${HC.url}/`],
+    ['a linker', { linker_auth: { capabilities: ['dht_read'], required: true } }, undefined, 'https://l1.example.com/admin/agents'],
+  ])('answers status with the approved join still pending when %s never answers in 5 seconds', async (_name, config, hcAuth, hung) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const lines = captureLogs(['log', 'warn', 'error']);
+    const { request, emails, didit } = await diditApp(config, hcAuth, linkersAt(['https://l1.example.com']));
+    const agent = await signingAgent();
+    const { session, token } = await joined(request, emails, agent);
+    await pressContinue(request, token);
+    didit.sessions[0].status = 'Approved';
+    later();
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!url.startsWith(hung)) return didit.respond(url, init ?? {});
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)));
+    });
+    // Fake timers cannot advance AbortSignal.timeout, so it is cut to 1 ms and the test checks the 5000 ms asked for.
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const bound = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(1));
+
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ completed: true, metadata: { state: 'approved' } }] });
+    expect(bound).toHaveBeenLastCalledWith(5000);
+    expect(lines.join('\n')).toContain(`[ready path] agent ${agent.agentKey.slice(0, 20)}... stays pending`);
+    expect(lines.join('\n')).not.toContain(session);
+  });
+
   it('authorizes the agent on every linker when the join turns ready, and not before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const linkers = ['https://l1.example.com', 'https://l2.example.com'];
-    const urlProvider: UrlProvider = {
-      getLinkerRegistrations: async () =>
-        linkers.map((url, i) => ({ linker_url: { url: `wss://l${i + 1}.example.com:8090` }, admin: { url, secret: `s${i}` } })),
-      getHttpGateways: async () => undefined,
-    };
-    const { request, emails, didit } = await diditApp({ linker_auth: { capabilities: ['dht_read'] } }, undefined, urlProvider);
+    const { request, emails, didit } = await diditApp({ linker_auth: { capabilities: ['dht_read'] } }, undefined, linkersAt(linkers));
     const authorized: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);

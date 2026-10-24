@@ -218,7 +218,7 @@ describe('hc-auth integration — email_code auth (ready on verify)', () => {
     });
     expect((await verify()).status).toBe(503);
     expect((await ctx.sessionStore.get(session))!.status).toBe('pending');
-    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
+    expect(await (await request(`/v1/join/${session}/status`)).json()).toMatchObject({ status: 'pending' });
 
     spy.mockResolvedValue();
     expect(await (await verify()).json()).toEqual({ status: 'ready' });
