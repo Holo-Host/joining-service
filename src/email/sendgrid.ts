@@ -1,4 +1,4 @@
-import type { EmailTransport } from './transport.js';
+import type { EmailParts, EmailTransport } from './transport.js';
 
 export class SendGridTransport implements EmailTransport {
   private apiKey: string;
@@ -9,7 +9,7 @@ export class SendGridTransport implements EmailTransport {
     this.from = from;
   }
 
-  async send(to: string, subject: string, body: string): Promise<void> {
+  async send(to: string, subject: string, body: string, parts: EmailParts = {}): Promise<void> {
     const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
       method: 'POST',
       headers: {
@@ -18,9 +18,18 @@ export class SendGridTransport implements EmailTransport {
       },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: to }] }],
-        from: { email: this.from },
+        from: parts.senderName ? { email: this.from, name: parts.senderName } : { email: this.from },
         subject,
-        content: [{ type: 'text/plain', value: body }],
+        content: [
+          { type: 'text/plain', value: body },
+          ...(parts.html ? [{ type: 'text/html', value: parts.html }] : []),
+        ],
+        // Tracking would send the link through the provider's redirect.
+        tracking_settings: {
+          click_tracking: { enable: false, enable_text: false },
+          open_tracking: { enable: false },
+          subscription_tracking: { enable: false },
+        },
       }),
     });
 
