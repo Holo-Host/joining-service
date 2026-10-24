@@ -24,7 +24,7 @@ import { MemoryNetworkStore } from './network-registration/memory-store.js';
 import { SqliteNetworkStore } from './network-registration/sqlite-store.js';
 import type { NetworkStore } from './network-registration/store.js';
 
-function buildEmailTransport(config: ServiceConfig): EmailTransport | null {
+export function buildEmailTransport(config: ServiceConfig): EmailTransport | null {
   if (!config.email) return null;
 
   if (config.email.provider === 'file') {
