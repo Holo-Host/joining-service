@@ -1,6 +1,6 @@
 {
   "name": "@holo-host/joining-service",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Reference joining service for Holochain hApps on Holo",
   "license": "CAL-1.0",
   "type": "module",
@@ -53,7 +53,8 @@
     "test": "vitest run",
     "test:ui": "vitest run test/ui/",
     "test:watch": "vitest",
-    "gen-signing-key": "NODE_OPTIONS=--preserve-symlinks tsx scripts/gen-signing-key.ts"
+    "gen-signing-key": "NODE_OPTIONS=--preserve-symlinks tsx scripts/gen-signing-key.ts",
+    "send-test-email": "tsx scripts/send-test-email.ts"
   },
   "dependencies": {
     "@holo-host/lair": "^0.1.2",

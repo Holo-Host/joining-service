@@ -1,12 +1,17 @@
+import { createHash } from 'node:crypto';
 import type { DiditWithEmailState } from '../types.js';
-import { NO_ATTEMPTS_LEFT, formatUtc, shortAgentKey } from './didit-with-email.js';
+import { NO_ATTEMPTS_LEFT } from './didit-with-email.js';
+import { CARD, FONT, MONO, escapeHtml } from './didit-with-email-card.js';
+
+const COPY_SCRIPT =
+  "const b=document.getElementById('copy'),k=document.getElementById('key'),f=document.getElementById('copy-failed');if(navigator.clipboard){b.hidden=false;b.onclick=()=>navigator.clipboard.writeText(k.textContent).then(()=>{b.textContent='Copied'},()=>{b.hidden=true;f.hidden=false;getSelection().selectAllChildren(k)})}";
 
 const PAGE_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
   'Cache-Control': 'no-store',
   'Referrer-Policy': 'no-referrer',
   'X-Robots-Tag': 'noindex',
-  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${createHash('sha256').update(COPY_SCRIPT).digest('base64')}'; frame-ancestors 'none'`,
 };
 
 export const TEXT = {
@@ -21,65 +26,94 @@ export const TEXT = {
   notFound: 'We could not find your verification. To start again, open the link in your email and press Continue.',
   rejected: NO_ATTEMPTS_LEFT,
   otherDevice: 'Another device is verifying this email. Finish there, or try again when it ends.',
+  keyIntro: 'For the device with this agent key:',
+  keyCheck: 'Continue only if that is the key shown in your app.',
+  copyFailed: 'Your browser did not allow copying. Select the key and copy it.',
+  caution: 'If you did not start this, close this page and do not continue.',
 };
 
-function escape(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
+const LANDING_LEAD: Partial<Record<DiditWithEmailState, string>> = {
+  approved: TEXT.approvedLanding,
+  in_review: TEXT.inReview,
+  declined: TEXT.notPassedLanding,
+  expired: TEXT.notPassedLanding,
+};
 
-function page(paragraphs: string[], status: number, form = ''): Response {
-  const body = paragraphs.map((p) => `<p>${escape(p)}</p>`).join('\n');
-  const html = `<!doctype html>
+const STYLE = `*{box-sizing:border-box}
+html{background:${CARD.background};color-scheme:dark}
+body{margin:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:16px;font:15px/1.5 ${FONT};color:${CARD.text};text-align:center;-webkit-text-size-adjust:100%}
+main{width:100%;max-width:${CARD.width}px;padding:32px 24px;background:${CARD.card};border:1px solid rgba(255,255,255,.08);border-radius:${CARD.cardRadius};box-shadow:0 12px 40px rgba(0,0,0,.35)}
+.app{margin:0 0 6px;font-size:14px;font-weight:600;letter-spacing:.02em}
+h1{margin:0 0 16px;font-size:22px;line-height:1.3;font-weight:600;color:${CARD.heading}}
+p{margin:0 0 12px}
+p:last-child{margin-bottom:0}
+.lead{font-weight:600;color:${CARD.heading}}
+.key{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:8px 8px 8px 12px;background:${CARD.keyBox};border:1px solid ${CARD.keyBorder};border-radius:${CARD.buttonRadius};text-align:left}
+.key code{flex:1;min-width:0;font:13px/1.5 ${MONO};color:${CARD.heading};overflow-wrap:anywhere;word-break:break-word;-webkit-user-select:all;user-select:all}
+.caution{margin-top:20px;font-size:13px;color:${CARD.muted}}
+form{margin:20px 0 0}
+button{width:100%;min-height:44px;padding:10px 20px;border:0;border-radius:${CARD.buttonRadius};background:${CARD.button};color:${CARD.buttonText};font:600 15px/1.5 ${FONT};cursor:pointer}
+button:hover{background:#0a5fbe}
+button:focus-visible{outline:2px solid ${CARD.heading};outline-offset:3px}
+.key button{width:auto;min-width:64px;padding:0 12px;background:#2a2a30;font-size:13px}
+.key button:hover{background:#3a3a42}`;
+
+export function linkPages(happName: string) {
+  function page(status: number, lead: string, more: { body?: string; caution?: string } = {}): Response {
+    const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Identity verification</title>
-<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;padding:0 1rem;line-height:1.5}button{font:inherit;padding:.6rem 1.6rem}</style>
+<style>${STYLE}</style>
 </head>
 <body>
+<main>
+<p class="app">${escapeHtml(happName)}</p>
 <h1>Identity verification</h1>
-${body}
-${form}
+<p class="lead">${escapeHtml(lead)}</p>
+${more.body ?? ''}
+${more.caution ? `<p class="caution">${escapeHtml(more.caution)}</p>` : ''}
+</main>
 </body>
 </html>
 `;
-  return new Response(html, { status, headers: PAGE_HEADERS });
-}
+    return new Response(html, { status, headers: PAGE_HEADERS });
+  }
 
-export function messagePage(text: string, status = 200): Response {
-  return page([text], status);
+  function message(text: string, status = 200): Response {
+    return page(status, text);
+  }
+
+  return {
+    message,
+
+    landing({ network, agentKey, state }: { network: string; agentKey: string; state: DiditWithEmailState }): Response {
+      const request = `Request to verify your identity to join ${network} with this email address.`;
+      const lead = LANDING_LEAD[state];
+      const body = `${lead ? `<p>${escapeHtml(request)}</p>\n` : ''}<p>${escapeHtml(TEXT.keyIntro)}</p>
+<div class="key"><code id="key">${escapeHtml(agentKey)}</code><button type="button" id="copy" aria-live="polite" hidden>Copy</button></div>
+<p id="copy-failed" role="status" hidden>${escapeHtml(TEXT.copyFailed)}</p>
+<script>${COPY_SCRIPT}</script>
+<p>${escapeHtml(TEXT.keyCheck)}</p>`;
+      if (state === 'approved' || state === 'in_review') return page(200, lead!, { body });
+      return page(200, lead ?? request, {
+        body: `${body}\n<form method="post"><button type="submit">Continue</button></form>`,
+        caution: TEXT.caution,
+      });
+    },
+
+    done(state: DiditWithEmailState): Response {
+      if (state === 'approved') return message(TEXT.approved);
+      if (state === 'in_review') return message(TEXT.inReview);
+      if (state === 'in_progress') return message(TEXT.inProgress);
+      if (state === 'link_sent') return message(TEXT.notFound);
+      return message(TEXT.notPassed);
+    },
+  };
 }
 
 export function redirectTo(url: string): Response {
   return new Response(null, { status: 303, headers: { ...PAGE_HEADERS, Location: url } });
-}
-
-/** `GET /v1/didit/{token}`: the request, and a Continue button while there is something to continue. */
-export function landingPage(request: {
-  network: string;
-  startedAt: number;
-  agentKey: string;
-  state: DiditWithEmailState;
-}): Response {
-  const { network, state } = request;
-  const paragraphs = [
-    `Someone started joining ${network} with this email address on ${formatUtc(request.startedAt)}.`,
-    `This request is for the device with agent key ${shortAgentKey(request.agentKey)}. Continue only if that is the key shown in your app.`,
-  ];
-  if (state === 'approved') return page([...paragraphs, TEXT.approvedLanding], 200);
-  if (state === 'in_review') return page([...paragraphs, TEXT.inReview], 200);
-
-  paragraphs.push(`Did you start joining ${network}? If not, close this page and do not continue.`);
-  if (state === 'declined' || state === 'expired') paragraphs.push(TEXT.notPassedLanding);
-  return page(paragraphs, 200, '<form method="post"><button type="submit">Continue</button></form>');
-}
-
-/** `GET /v1/didit/done/{credential}`: where the verification stands. */
-export function donePage(state: DiditWithEmailState): Response {
-  if (state === 'approved') return messagePage(TEXT.approved);
-  if (state === 'in_review') return messagePage(TEXT.inReview);
-  if (state === 'in_progress') return messagePage(TEXT.inProgress);
-  if (state === 'link_sent') return messagePage(TEXT.notFound);
-  return messagePage(TEXT.notPassed);
 }

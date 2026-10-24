@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ServiceConfig, RoleConfig } from './config.js';
 import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './auth-methods/plugin.js';
@@ -53,7 +53,7 @@ export interface ServiceContext {
 }
 
 /**
- * A required downstream service (currently hc-auth) was unreachable or
+ * A required downstream service was unreachable or
  * errored. Mapped to 503 `service_unavailable` by the error handler, so a
  * caller can tell "we could not reach our auth service" from "your
  * credentials were rejected" -- the two need very different responses, and a
@@ -188,7 +188,7 @@ async function notifyLinkers(
       .join('; ');
 
     if (required) {
-      throw new Error(`linker authorization failed: ${summary}`);
+      throw new ServiceUnavailableError('Linker authorization failed', summary);
     }
     console.error(
       `[linker-auth] authorization failed on ${failures.length}/${authable.length} linkers (non-fatal): ${summary}`,
@@ -525,12 +525,36 @@ async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): P
   return true;
 }
 
+async function completeOrStayPending(ctx: ServiceContext, session: SessionData): Promise<void> {
+  try {
+    await completeIfSatisfied(ctx, session);
+  } catch (err) {
+    if (!(err instanceof ServiceUnavailableError)) throw err;
+    console.error(`[ready path] agent ${session.agent_key.slice(0, 20)}... stays pending, and the next call retries: ${err.message}:`, err.reason);
+  }
+}
+
 const ALREADY_JOINED =
   'This agent key has already completed joining this network. Use POST /v1/reconnect instead.';
 
 export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
   const didit = diditMethod(ctx);
+
+  async function answerAsResume(c: Context, session: SessionData): Promise<Response> {
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
+    }
+    await completeOrStayPending(ctx, session);
+
+    if (session.status === 'ready') {
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
+    }
+    if (session.status === 'rejected') {
+      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
+    }
+    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+  }
 
   // Without this, any throw escaping a handler becomes Hono's default bare
   // `Internal Server Error` text body -- no code for a client to branch on,
@@ -550,7 +574,7 @@ export function createApp(ctx: ServiceContext): Hono {
     return errorJson('internal_error', 'Internal server error', 500);
   });
 
-  app.use('*', cors());
+  app.use('*', cors({ exposeHeaders: ['Retry-After'] }));
 
   app.use('*', async (c, next) => {
     await next();
@@ -625,8 +649,8 @@ export function createApp(ctx: ServiceContext): Hono {
     const { agentKey: agent_key, network: requestedNetwork } = scope;
 
     const signed = body.timestamp !== undefined || body.signature !== undefined;
+    const email = typeof claims?.email === 'string' ? claims.email : '';
     if (signed) {
-      const email = typeof claims?.email === 'string' ? claims.email : '';
       const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => `join:${t}:${email}`);
       if (refused) return refused;
     } else if (didit && claims?.email && !body.delegated_verification) {
@@ -680,6 +704,9 @@ export function createApp(ctx: ServiceContext): Hono {
         'Use POST /v1/join/resume, or sign the join to start again',
         409,
       );
+    }
+    if (replacesLink && signed && !body.delegated_verification && didit?.sentTo(existing, email)) {
+      return answerAsResume(c, existing);
     }
     // A replaced link session is deleted only when this join writes its own,
     // so a refused join leaves the link working.
@@ -1054,23 +1081,13 @@ export function createApp(ctx: ServiceContext): Hono {
         }
       }
 
-      if (changed) {
-        const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
-        if (newStatus === 'ready') {
-          await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
-        }
-        await ctx.sessionStore.update(sessionId, {
-          status: newStatus,
-          challenges: session.challenges,
-        });
-        session.status = newStatus;
-      }
+      if (changed) await ctx.sessionStore.update(sessionId, { challenges: session.challenges });
     }
 
     if (session.status === 'pending' && didit && holdsLink(session)) {
       await didit.refresh(session);
     }
-    await completeIfSatisfied(ctx, session);
+    await completeOrStayPending(ctx, session);
 
     const resp: Record<string, unknown> = { status: session.status };
 
@@ -1233,19 +1250,7 @@ export function createApp(ctx: ServiceContext): Hono {
         404,
       );
     }
-
-    if (session.status === 'pending' && didit && holdsLink(session)) {
-      await didit.refresh(session);
-    }
-    await completeIfSatisfied(ctx, session);
-
-    if (session.status === 'ready') {
-      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
-    }
-    if (session.status === 'rejected') {
-      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
-    }
-    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+    return answerAsResume(c, session);
   });
 
   // ---- POST /v1/reconnect ----

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { SessionData, SessionStore } from '../session/store.js';
 import type { DiditWithEmailAuthMethod } from '../auth-methods/didit-with-email.js';
-import { TEXT, donePage, landingPage, messagePage, redirectTo } from '../auth-methods/didit-with-email-pages.js';
+import { TEXT, linkPages, redirectTo } from '../auth-methods/didit-with-email-pages.js';
 import { errorJson, safeParseJson } from './utils.js';
 import { ResendBody } from './request-types.js';
 
@@ -11,16 +11,6 @@ export interface DiditRouteHooks {
   pendingView(session: SessionData): object;
 }
 
-/** A link page, answering any failure with a page rather than the API's JSON error. */
-async function page(render: () => Promise<Response>): Promise<Response> {
-  try {
-    return await render();
-  } catch (err) {
-    console.error('[didit_with_email] link page failed:', err);
-    return messagePage(TEXT.unavailable, 503);
-  }
-}
-
 /** The emailed link's pages, and the resend of its email. */
 export function createDiditRoutes(
   method: DiditWithEmailAuthMethod,
@@ -28,15 +18,25 @@ export function createDiditRoutes(
   hooks: DiditRouteHooks,
 ): Hono {
   const app = new Hono();
+  const pages = linkPages(method.happName);
+
+  /** A link page, answering any failure with a page rather than the API's JSON error. */
+  async function page(render: () => Promise<Response>): Promise<Response> {
+    try {
+      return await render();
+    } catch (err) {
+      console.error('[didit_with_email] link page failed:', err);
+      return pages.message(TEXT.unavailable, 503);
+    }
+  }
 
   // ---- GET /v1/didit/:token ----
   app.get('/v1/didit/:token', (c) => page(async () => {
     const found = await method.findLink(c.req.param('token'));
-    if (!found) return messagePage(TEXT.invalid, 404);
+    if (!found) return pages.message(TEXT.invalid, 404);
     const { session, cs } = found;
-    return landingPage({
+    return pages.landing({
       network: cs.link!.network_name,
-      startedAt: session.created_at,
       agentKey: session.agent_key,
       state: cs.link!.state,
     });
@@ -45,7 +45,7 @@ export function createDiditRoutes(
   // ---- POST /v1/didit/:token ----
   app.post('/v1/didit/:token', (c) => page(async () => {
     const found = await method.findLink(c.req.param('token'));
-    if (!found) return messagePage(TEXT.invalid, 404);
+    if (!found) return pages.message(TEXT.invalid, 404);
     const { session, cs } = found;
 
     const outcome = await method.continue(session, cs);
@@ -54,27 +54,27 @@ export function createDiditRoutes(
         return redirectTo(outcome.url);
       case 'approved':
         await hooks.finishJoin(session);
-        return messagePage(TEXT.approved);
+        return pages.message(TEXT.approved);
       case 'in_review':
-        return messagePage(TEXT.inReview);
+        return pages.message(TEXT.inReview);
       case 'rejected':
-        return messagePage(TEXT.rejected, 403);
+        return pages.message(TEXT.rejected, 403);
       case 'busy':
-        return messagePage(TEXT.otherDevice, 409);
+        return pages.message(TEXT.otherDevice, 409);
       case 'unavailable':
-        return messagePage(TEXT.unavailable, 503);
+        return pages.message(TEXT.unavailable, 503);
     }
   }));
 
   // ---- GET /v1/didit/done/:credential ----
   app.get('/v1/didit/done/:credential', (c) => page(async () => {
     const found = await method.findDone(c.req.param('credential'));
-    if (!found) return messagePage(TEXT.invalid, 404);
+    if (!found) return pages.message(TEXT.invalid, 404);
     const { session, cs } = found;
-    if (session.status === 'rejected') return messagePage(session.reason ?? TEXT.rejected, 403);
+    if (session.status === 'rejected') return pages.message(session.reason ?? TEXT.rejected, 403);
     // Didit holds this credential, so the page's only write is a gated decision read. The app's next status call finishes the join.
     if (session.status === 'pending') await method.refresh(session);
-    return donePage(cs.link!.state);
+    return pages.done(cs.link!.state);
   }));
 
   // ---- POST /v1/join/:session/resend ----

@@ -22,6 +22,7 @@ import {
 } from '../didit/client.js';
 import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './plugin.js';
 import { maskEmail } from './email-code.js';
+import { renderLinkEmail } from './didit-with-email-mail.js';
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -56,18 +57,6 @@ const LISTED_RANK: Partial<Record<DiditWithEmailState, number>> = {
 export const NO_ATTEMPTS_LEFT =
   'This email address has no identity verification attempts left. Contact support.';
 
-const DEFAULT_SUBJECT = 'Verify your identity to join {{network}}';
-const DEFAULT_TEMPLATE = `Someone started joining {{network}} with this email address.
-
-This request is for the device with agent key {{agent_key}}. Continue only if that is the key shown in your app.
-
-To finish, open this link and verify your identity with Didit:
-{{link}}
-
-You can open the link on this device or on your phone. It works until {{expires_at}}.
-
-If you did not start this, ignore this email. Do not verify your identity for a join that you did not start.`;
-
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -96,11 +85,6 @@ export interface DiditWithEmailDeps {
   happName: string;
 }
 
-/** An agent key shortened as the app shows it. */
-export function shortAgentKey(agentKey: string): string {
-  return `${agentKey.slice(0, 8)}…${agentKey.slice(-6)}`;
-}
-
 /** A time as `28 October 2026, 14:02 UTC`. */
 export function formatUtc(ms: number): string {
   const d = new Date(ms);
@@ -125,10 +109,6 @@ export function pollIntervalMs(challenges: ChallengeState[]): number {
   const links = challenges.filter((cs) => cs.link);
   if (links.length === 0) return 2000;
   return links.some((cs) => !cs.completed && cs.link!.state === 'in_review') ? 60_000 : 5000;
-}
-
-function fill(template: string, values: Record<string, string>): string {
-  return template.replace(/\{\{(network|link|expires_at|agent_key)\}\}/g, (_, key: string) => values[key]);
 }
 
 function unknownStatus(status: string): string {
@@ -172,7 +152,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   private readonly transport: EmailTransport;
   private readonly config: ResolvedDiditConfig;
   private readonly baseUrl: string;
-  private readonly happName: string;
+  readonly happName: string;
 
   constructor(deps: DiditWithEmailDeps) {
     this.client = deps.client;
@@ -243,6 +223,11 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   /** In any status, so the done page still shows a finished join. */
   findDone(credential: string): Promise<FoundLink | undefined> {
     return this.findByHash(credential, (link, hash) => link.done_hash === hash);
+  }
+
+  sentTo(session: SessionData, email: string): boolean {
+    const subject = subjectId(email, this.config.subject_key);
+    return session.challenges.some((cs) => cs.link?.subject_id === subject);
   }
 
   async resend(session: SessionData, cs: ChallengeState): Promise<void> {
@@ -479,18 +464,14 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     }
 
     const token = randomBytes(32).toString('base64url');
-    const values = {
-      network: link.network_name,
-      link: `${this.baseUrl}/v1/didit/${token}`,
-      expires_at: formatUtc(expiresAt),
-      agent_key: shortAgentKey(agentKey),
-    };
     try {
-      await this.transport.send(
-        email,
-        fill(this.config.email_subject ?? DEFAULT_SUBJECT, values),
-        fill(this.config.email_template ?? DEFAULT_TEMPLATE, values),
-      );
+      const message = renderLinkEmail(this.happName, this.config, {
+        network: link.network_name,
+        link: `${this.baseUrl}/v1/didit/${token}`,
+        expires_at: formatUtc(expiresAt),
+        agent_key: agentKey,
+      });
+      await this.transport.send(email, message.subject, message.text, { html: message.html, senderName: this.happName });
     } catch (err) {
       await storeStep('release an email', () => this.store.removeEvents(keys, now)).catch(() => {});
       console.error(`[didit_with_email] email send failed: ${errorHead(err)}`);

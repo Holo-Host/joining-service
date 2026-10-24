@@ -95,7 +95,7 @@ describe('linker-auth integration — open auth (immediate ready)', () => {
     expect((await res.json()).status).toBe('ready');
   });
 
-  it('returns 500 when linker auth fails and required=true', async () => {
+  it('returns 503 when linker auth fails and required=true', async () => {
     mockFetchFail();
     const { request } = await createTestApp(
       { linker_auth: { capabilities: ['dht_read'], required: true } },
@@ -109,7 +109,7 @@ describe('linker-auth integration — open auth (immediate ready)', () => {
       body: JSON.stringify({ agent_key: fakeAgentKey() }),
     });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(503);
   });
 
   it('does not call linker auth when linker_auth config is absent', async () => {

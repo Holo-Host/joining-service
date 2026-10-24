@@ -16,6 +16,8 @@
  * to convert a Holochain AgentPubKey before calling these methods.
  */
 
+const TIMEOUT_MS = 5_000;
+
 export interface HcAuthConfig {
   /** Base URL of the hc-auth-server, e.g. "https://auth.holo.host" */
   url: string;
@@ -53,6 +55,10 @@ export class HcAuthClient {
     this.authHeader = `Bearer ${config.api_token}`;
   }
 
+  private request(path: string, init: RequestInit): Promise<Response> {
+    return fetch(`${this.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  }
+
   /**
    * Register a raw Ed25519 public key as a pending auth request.
    *
@@ -74,14 +80,11 @@ export class HcAuthClient {
    * the server-side conflict mapping land without a lockstep release here.
    */
   async requestAuth(rawPubKeyB64url: string, metadata: unknown): Promise<void> {
-    const resp = await fetch(
-      `${this.baseUrl}/request-auth/${rawPubKeyB64url}`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(metadata),
-      },
-    );
+    const resp = await this.request(`/request-auth/${rawPubKeyB64url}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    });
 
     if (resp.ok || resp.status === 409 || resp.status === 500) return;
 
@@ -111,7 +114,7 @@ export class HcAuthClient {
     oldState: AgentState,
     newState: AgentState,
   ): Promise<void> {
-    const resp = await fetch(`${this.baseUrl}/api/transition`, {
+    const resp = await this.request('/api/transition', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -137,7 +140,7 @@ export class HcAuthClient {
    * Returns null if the key is not registered.
    */
   async getRecord(rawPubKeyB64url: string): Promise<HcAuthRecord | null> {
-    const resp = await fetch(`${this.baseUrl}/api/get/${rawPubKeyB64url}`, {
+    const resp = await this.request(`/api/get/${rawPubKeyB64url}`, {
       headers: { Authorization: this.authHeader },
     });
     if (resp.status === 404) return null;
@@ -161,7 +164,7 @@ export class HcAuthClient {
     rawPubKeyB64url: string,
     verified: Record<string, unknown>,
   ): Promise<void> {
-    const resp = await fetch(`${this.baseUrl}/api/verified/${rawPubKeyB64url}`, {
+    const resp = await this.request(`/api/verified/${rawPubKeyB64url}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
