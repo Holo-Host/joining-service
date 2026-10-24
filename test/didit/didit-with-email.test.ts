@@ -6,6 +6,7 @@ import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { DiditWithEmailAuthMethod, NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
 import { TEXT, linkPages } from '../../src/auth-methods/didit-with-email-pages.js';
+import { renderLinkEmail } from '../../src/auth-methods/didit-with-email-mail.js';
 import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
 import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
@@ -135,6 +136,9 @@ describe('didit_with_email join', () => {
     );
     expect(email.body).toMatch(/It works until \d{1,2} [A-Z][a-z]+ \d{4}, \d{2}:\d{2} UTC\./);
     expect(email.body).not.toMatch(/\b\d{6}\b/);
+    expect(email.senderName).toBe('Test App');
+    expect(email.html).toContain(`This request is for the device with agent key ${shortKey(agent.agentKey)}.`);
+    expect(email.html).toContain(`>${BASE_URL}/v1/didit/${linkToken(email)}</a>`);
     expect(didit.requests).toHaveLength(0);
 
     expect(join.status).toBe('pending');
@@ -388,6 +392,31 @@ describe('didit_with_email join', () => {
     expect((await first.json()).error.message).toBe('Open the link in the email to continue');
     for (let i = 0; i < 4; i++) await verify();
     expect((await verify()).status).toBe(429);
+  });
+});
+
+describe('the didit_with_email email', () => {
+  it('escapes every value and the template, and makes the line that holds only the link a button over the plain URL', () => {
+    const link = 'https://join.example.com/v1/didit/a&b';
+    const href = 'https://join.example.com/v1/didit/a&#38;b';
+    const { subject, text, html } = renderLinkEmail(
+      'Ada & Co',
+      {
+        email_subject: 'Join <i>{{network}}</i>',
+        email_template: '<b>Hi</b> {{network}}, key {{agent_key}}\n{{link}}\n\nUntil {{expires_at}}. See {{link}}',
+      },
+      { network: '<img src=x>', link, expires_at: '1 May', agent_key: '"key"' },
+    );
+    expect(subject).toBe('Join <i><img src=x></i>');
+    expect(text).toBe(`<b>Hi</b> <img src=x>, key "key"\n${link}\n\nUntil 1 May. See ${link}`);
+    expect(html).not.toMatch(/<(i|b|img|script)\b/);
+    expect(html).toContain('>Ada &#38; Co</p>');
+    expect(html).toContain('>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62;</h1>');
+    expect(html).toContain('>&#60;b&#62;Hi&#60;/b&#62; &#60;img src=x&#62;, key &#34;key&#34;</p>');
+    expect(html.match(/>Verify your identity<\/a>/g)).toHaveLength(1);
+    expect(html.match(new RegExp(`<a href="${href}"`, 'g'))).toHaveLength(2);
+    expect(html).toContain(`>${href}</a></p>`);
+    expect(html).toContain(`>Until 1 May. See ${href}</p>`);
   });
 });
 

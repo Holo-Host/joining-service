@@ -21,6 +21,11 @@ describe('resolveConfig for didit_with_email', () => {
     ['an http base_url', { base_url: 'http://join.example.com' }, /https base_url/],
     ['a base_url that is not a URL', { base_url: 'join.example.com' }, /https base_url/],
     ['email_code in its group', { auth_methods: [{ any_of: ['email_code', 'didit_with_email'] }] }, /didit_with_email and email_code/],
+    ...['\r', '\n', '<', '>', ',', '"', '\\'].map((c) => [
+      `a happ.name holding ${JSON.stringify(c)}`,
+      { happ: { ...HAPP, name: `Test${c}App` } },
+      /sends as happ.name/,
+    ]),
   ] as [string, Partial<ServiceConfig>, RegExp][])('refuses %s', (_name, overrides, message) => {
     expect(resolve(overrides)).toThrow(message);
   });
