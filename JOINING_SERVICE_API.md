@@ -1049,6 +1049,7 @@ The joining service must be callable from any origin (hApp UIs on arbitrary doma
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type
+Access-Control-Expose-Headers: Retry-After
 Access-Control-Max-Age: 86400
 ```
 
