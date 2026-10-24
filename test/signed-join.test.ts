@@ -132,7 +132,7 @@ describe('POST /v1/join/resume', () => {
     expect((await res.json()).error.code).toBe('agent_already_joined');
   });
 
-  it('makes ready a pending session with every requirement met, then answers 409', async () => {
+  it('answers a pending session with every requirement met as pending while hc-auth fails and 500 while its store fails, then makes it ready and answers 409', async () => {
     const HC = { url: 'https://auth.example.com', api_token: 'tok', required: true, forward_claims: ['email'] };
     const client = new HcAuthClient(HC);
     const register = vi.spyOn(client, 'registerAndAuthorize').mockRejectedValueOnce(new Error('hc-auth down'));
@@ -141,10 +141,12 @@ describe('POST /v1/join/resume', () => {
     await ctx.sessionStore.create(stored(agent.agentKey, { completed: true }));
 
     const failed = await resume(request, agent);
-    expect(failed.status).toBe(503);
+    expect(await failed.json()).toMatchObject({ session: 'js_stored', status: 'pending', challenges: [{ completed: true }] });
     expect((await ctx.sessionStore.get('js_stored'))!.status).toBe('pending');
 
     register.mockResolvedValue();
+    vi.spyOn(ctx.sessionStore, 'update').mockRejectedValueOnce(new Error('store down'));
+    expect((await resume(request, agent)).status).toBe(500);
     const res = await resume(request, agent);
     expect(res.status).toBe(409);
     expect((await ctx.sessionStore.get('js_stored'))!.status).toBe('ready');

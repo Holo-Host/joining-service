@@ -304,7 +304,7 @@ The client sends its agent key and optional identity claims. The server determin
 | 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
 | 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join to replace the session. |
 | 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
-| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth step failed. Nothing was created. |
+| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth or linker step failed. Nothing was created. |
 
 A join refused after its invite code passed leaves the code unused.
 
@@ -379,7 +379,7 @@ For EVM signature challenges, `response` is the hex-encoded signature:
 | 410 | `challenge_expired` | Challenge has expired; client should `POST /join` again |
 | 422 | `verification_failed` | Response was incorrect (e.g., wrong code). A `didit_with_email` challenge answers this, with "Open the link in the email to continue", and the call counts toward the attempt limit. |
 | 429 | `rate_limited` | Too many verification attempts |
-| 503 | `service_unavailable` | The challenge passed, but a required hc-auth step failed. The session stays pending, and a status poll or the same verify again retries. |
+| 503 | `service_unavailable` | The challenge passed, but a required hc-auth or linker step failed. The session stays pending, and a status poll or the same verify again retries. |
 
 ---
 
@@ -414,13 +414,14 @@ The `/status` endpoint returns the current session state, including status and o
 
 For an open `didit_with_email` challenge with a Didit session, status first reads Didit's decision, at most once per read interval (Section 8). An approved decision for this join completes the challenge and makes the session ready. While Didit is unreachable, the stored state comes back and the next poll tries again.
 
+Each request to hc-auth or a linker times out after 5 seconds. When a required hc-auth or linker step fails, the session stays `pending` with its completed challenges, and the next poll retries.
+
 **Errors**:
 
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 410 | `session_expired` | Session has expired entirely |
-| 503 | `service_unavailable` | A session whose every requirement is met could not be made ready at a required hc-auth step. The session stays pending, and the next poll retries. |
 
 ---
 
@@ -912,7 +913,7 @@ The way back into a join for a client that lost its session token, for example a
 { "session": "js_a1b2c3d4e5f6", "status": "rejected", "reason": "Agent blocked by administrator" }
 ```
 
-A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`.
+A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`. If a required step fails again, the call answers the session as pending.
 
 **Errors**:
 
@@ -925,7 +926,6 @@ A pending session whose every requirement is already met (an earlier step to mak
 | 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
 | 404 | `join_not_found` | No session for this agent key in this scope. Start a join with `POST /v1/join`. |
 | 409 | `agent_already_joined` | The session is ready, before or after this call. Use `POST /v1/reconnect`, then provision. |
-| 503 | `service_unavailable` | Making the session ready failed at a required hc-auth step. The session stays pending. |
 
 ---
 
@@ -1216,7 +1216,7 @@ Config:
 | `required` | boolean | no | If `true`, a failure to communicate with hc-auth blocks provisioning. Default: `false` (non-fatal — hc-auth outage does not break joining) |
 | `forward_claims` | string[] | no | Claim keys to forward to hc-auth during registration (e.g. `["email", "phone"]`). When set, matching claims from the join session are included in the metadata payload sent to `PUT /request-auth/{pubkey}` and are also written to the record's `verified` field (see below). Only useful when other auth methods collect those claims (e.g. `email_code`, `sms_code`). Default: none |
 
-The forwarded claims are written twice. The metadata sent to `PUT /request-auth/{pubkey}` is public: anyone can call that route, so downstream services must not trust it. On every join that reaches `ready`, the service also calls the admin route `PUT /api/verified/{pubkey}` with the same claims. This replaces the record's `verified` field, the only field downstream services trust (for example, the voucher service reads `verified.email`). The write happens even when the key is already `authorized`, so a user who reinstalls with the same key, or who joined before `verified` existed, gets the field on their next join. When `hc_auth_approval` is in the method set, the service does not authorize the key itself, but it still writes `verified` when the session becomes `ready`. If the write fails and `required` is `true`, the join fails with `503 service_unavailable` and a polled session stays `pending`. If `required` is `false`, the failure is logged and the join proceeds without `verified`.
+The forwarded claims are written twice. The metadata sent to `PUT /request-auth/{pubkey}` is public: anyone can call that route, so downstream services must not trust it. On every join that reaches `ready`, the service also calls the admin route `PUT /api/verified/{pubkey}` with the same claims. This replaces the record's `verified` field, the only field downstream services trust (for example, the voucher service reads `verified.email`). The write happens even when the key is already `authorized`, so a user who reinstalls with the same key, or who joined before `verified` existed, gets the field on their next join. When `hc_auth_approval` is in the method set, the service does not authorize the key itself, but it still writes `verified` when the session becomes `ready`. If the write fails and `required` is `true`, the session does not become `ready`, as with any required hc-auth step that fails. If `required` is `false`, the failure is logged and the join proceeds without `verified`.
 
 `verified` is only as trustworthy as the configuration. The service copies claims by key name from the join request, so list in `forward_claims` only the claims that a configured method proves (`email` with `email_code` or `didit_with_email`, `phone` with `sms_code`). A forwarded claim that no method checks is written to `verified` unproven.
 

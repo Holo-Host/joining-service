@@ -11,6 +11,8 @@
 
 import type { LinkerAdminInfo, LinkerCapability } from './types.js';
 
+const TIMEOUT_MS = 5_000;
+
 export class LinkerAuthClient {
   private readonly adminUrl: string;
   private readonly authHeader: string;
@@ -48,6 +50,7 @@ export class LinkerAuthClient {
         Authorization: this.authHeader,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
     if (!resp.ok) {

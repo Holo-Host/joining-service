@@ -53,7 +53,7 @@ export interface ServiceContext {
 }
 
 /**
- * A required downstream service (currently hc-auth) was unreachable or
+ * A required downstream service was unreachable or
  * errored. Mapped to 503 `service_unavailable` by the error handler, so a
  * caller can tell "we could not reach our auth service" from "your
  * credentials were rejected" -- the two need very different responses, and a
@@ -188,7 +188,7 @@ async function notifyLinkers(
       .join('; ');
 
     if (required) {
-      throw new Error(`linker authorization failed: ${summary}`);
+      throw new ServiceUnavailableError('Linker authorization failed', summary);
     }
     console.error(
       `[linker-auth] authorization failed on ${failures.length}/${authable.length} linkers (non-fatal): ${summary}`,
@@ -523,6 +523,15 @@ async function completeIfSatisfied(ctx: ServiceContext, session: SessionData): P
   await ctx.sessionStore.update(session.id, { status: 'ready', challenges: session.challenges });
   session.status = 'ready';
   return true;
+}
+
+async function completeOrStayPending(ctx: ServiceContext, session: SessionData): Promise<void> {
+  try {
+    await completeIfSatisfied(ctx, session);
+  } catch (err) {
+    if (!(err instanceof ServiceUnavailableError)) throw err;
+    console.error(`[ready path] agent ${session.agent_key.slice(0, 20)}... stays pending, and the next call retries: ${err.message}:`, err.reason);
+  }
 }
 
 const ALREADY_JOINED =
@@ -1054,23 +1063,13 @@ export function createApp(ctx: ServiceContext): Hono {
         }
       }
 
-      if (changed) {
-        const newStatus = allSatisfied(session.challenges) ? 'ready' : 'pending';
-        if (newStatus === 'ready') {
-          await notifyReady(ctx, session.agent_key, session.claims, session.challenges);
-        }
-        await ctx.sessionStore.update(sessionId, {
-          status: newStatus,
-          challenges: session.challenges,
-        });
-        session.status = newStatus;
-      }
+      if (changed) await ctx.sessionStore.update(sessionId, { challenges: session.challenges });
     }
 
     if (session.status === 'pending' && didit && holdsLink(session)) {
       await didit.refresh(session);
     }
-    await completeIfSatisfied(ctx, session);
+    await completeOrStayPending(ctx, session);
 
     const resp: Record<string, unknown> = { status: session.status };
 
@@ -1237,7 +1236,7 @@ export function createApp(ctx: ServiceContext): Hono {
     if (session.status === 'pending' && didit && holdsLink(session)) {
       await didit.refresh(session);
     }
-    await completeIfSatisfied(ctx, session);
+    await completeOrStayPending(ctx, session);
 
     if (session.status === 'ready') {
       return errorJson('agent_already_joined', ALREADY_JOINED, 409);
