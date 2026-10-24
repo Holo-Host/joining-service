@@ -30,6 +30,7 @@ describe('SendGridTransport', () => {
     expect(body.from).toEqual({ email: 'noreply@example.com' });
     expect(body.subject).toBe('Test Subject');
     expect(body.content).toEqual([{ type: 'text/plain', value: 'Hello there' }]);
+    expect(body.tracking_settings.click_tracking).toEqual({ enable: false, enable_text: false });
   });
 
   it('sends the HTML part after the text, from the sender name, with no tracking', async () => {
