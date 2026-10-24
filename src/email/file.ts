@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { EmailTransport } from './transport.js';
+import type { EmailParts, EmailTransport } from './transport.js';
 
 export class FileTransport implements EmailTransport {
   private outputDir: string;
@@ -10,11 +10,10 @@ export class FileTransport implements EmailTransport {
     mkdirSync(this.outputDir, { recursive: true });
   }
 
-  async send(to: string, subject: string, body: string): Promise<void> {
+  async send(to: string, subject: string, body: string, parts: EmailParts = {}): Promise<void> {
     const now = new Date();
     const timestamp = now.toISOString().replace(/:/g, '-').replace(/\.\d+Z$/, 'Z');
-    const filename = `${timestamp}_${to}.txt`;
-    const filepath = join(this.outputDir, filename);
+    const filepath = join(this.outputDir, `${timestamp}_${to}`);
 
     const content = [
       `To: ${to}`,
@@ -25,6 +24,7 @@ export class FileTransport implements EmailTransport {
       '',
     ].join('\n');
 
-    writeFileSync(filepath, content, 'utf-8');
+    writeFileSync(`${filepath}.txt`, content, 'utf-8');
+    if (parts.html) writeFileSync(`${filepath}.html`, parts.html, 'utf-8');
   }
 }

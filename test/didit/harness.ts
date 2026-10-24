@@ -1,13 +1,14 @@
 import { vi } from 'vitest';
 import { createTestApp, joinMessage, postJson, resumeMessage, signingAgent } from '../helpers.js';
 import { FileTransport } from '../../src/email/file.js';
+import type { EmailParts } from '../../src/email/transport.js';
 import type { ServiceConfig } from '../../src/config.js';
 import type { HcAuthClient } from '../../src/hc-auth/index.js';
 import type { UrlProvider } from '../../src/urls/provider.js';
 import { FakeDidit } from './fake-didit.js';
 import { DIDIT_SERVICE } from './fixtures.js';
 
-export interface SentEmail {
+export interface SentEmail extends EmailParts {
   to: string;
   subject: string;
   body: string;
@@ -19,8 +20,8 @@ export type Request = (path: string, init?: RequestInit) => Promise<Response>;
 /** Every email the file transport is asked to send, captured instead of written. */
 export function captureEmails(): SentEmail[] {
   const sent: SentEmail[] = [];
-  vi.spyOn(FileTransport.prototype, 'send').mockImplementation(async (to, subject, body) => {
-    sent.push({ to, subject, body });
+  vi.spyOn(FileTransport.prototype, 'send').mockImplementation(async (to, subject, body, parts) => {
+    sent.push({ to, subject, body, ...parts });
   });
   return sent;
 }

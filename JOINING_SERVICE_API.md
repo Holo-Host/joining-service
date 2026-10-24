@@ -1304,9 +1304,9 @@ Config:
 | `max_emails_per_address` | number | no | Emails to one address in 24 hours. Default: 5 |
 | `max_emails_per_agent` | number | no | Emails for one agent key in 24 hours. Default: 5 |
 | `email_subject` | string | no | Takes the same placeholders as `email_template` but `{{link}}`. Default: `Verify your identity to join {{network}}` |
-| `email_template` | string | no | Plain-text body. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the joining key as `uhCAk3fQ…9xQ2ab`). Must contain `{{link}}` |
+| `email_template` | string | no | Body, sent as plain text and as HTML. The HTML escapes it, and makes a line that holds only `{{link}}` a "Verify your identity" button over the plain URL. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the joining key as `uhCAk3fQ…9xQ2ab`). Must contain `{{link}}` |
 
-`resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, or beside `email_code`. A `didit` section without the method changes nothing.
+The email's sender name is `happ.name`. `resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, beside `email_code`, or with a `happ.name` that holds CR, LF, `<`, `>`, a comma, `"` or `\`. A `didit` section without the method changes nothing.
 
 **What reaches hc-auth.** The join reaches hc-auth exactly as an `email_code` join does. Once it is ready, the service registers the agent key, and `hc_auth.forward_claims: ["email"]` puts `claims.email`, as sent, into the registration metadata. With `hc_auth_approval` among the methods, hc-auth authorizes the key and the service registers nothing. Nothing from Didit reaches hc-auth.
 
