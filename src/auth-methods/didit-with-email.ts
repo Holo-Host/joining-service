@@ -172,7 +172,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   private readonly transport: EmailTransport;
   private readonly config: ResolvedDiditConfig;
   private readonly baseUrl: string;
-  private readonly happName: string;
+  readonly happName: string;
 
   constructor(deps: DiditWithEmailDeps) {
     this.client = deps.client;

@@ -5,11 +5,13 @@ import { subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { DiditWithEmailAuthMethod, NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
+import { TEXT, linkPages } from '../../src/auth-methods/didit-with-email-pages.js';
 import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
 import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
 import type { UrlProvider } from '../../src/urls/provider.js';
 import type { LinkSessionStore } from '../../src/session/store.js';
+import type { DiditWithEmailState } from '../../src/types.js';
 import type { FakeDidit, FakeSession } from './fake-didit.js';
 import { BASE_URL, DIDIT_SERVICE, SUBJECT_KEY, WORKFLOW_ID } from './fixtures.js';
 import {
@@ -437,6 +439,7 @@ describe('GET /v1/didit/{token}', () => {
       `This request is for the device with agent key ${shortKey(agent.agentKey)}. Continue only if that is the key shown in your app.`,
     );
     expect(html).toContain('Did you start joining Test App? If not, close this page and do not continue.');
+    expect(html).toContain('<p class="app">Test App</p>');
     expect(html).toContain('<form method="post"><button type="submit">Continue</button></form>');
     expect(html).not.toContain('<script');
     expect(res.headers.get('Cache-Control')).toBe('no-store');
@@ -457,6 +460,26 @@ describe('GET /v1/didit/{token}', () => {
       expect(res.status).toBe(503);
       expect(res.headers.get('Content-Type')).toContain('text/html');
       expect(await res.text()).toContain('Identity verification is not available right now.');
+    }
+  });
+});
+
+describe('link pages', () => {
+  it('shows each page as one card under happ.name and the heading, with the base CSP and no remote resource, and a button only where the landing page can continue', async () => {
+    const pages = linkPages('Ada & <Co>');
+    const request = { network: 'Test App', startedAt: Date.now(), agentKey: `uhCAk${'a'.repeat(48)}` };
+    const states: DiditWithEmailState[] = ['link_sent', 'in_progress', 'in_review', 'approved', 'declined', 'expired'];
+    const shown = [
+      ...states.map((state) => [pages.landing({ ...request, state }), state === 'in_review' || state === 'approved' ? 0 : 1] as const),
+      ...states.map((state) => [pages.done(state), 0] as const),
+      ...Object.values(TEXT).map((text) => [pages.message(text, 503), 0] as const),
+    ];
+    for (const [res, buttons] of shown) {
+      const html = await res.text();
+      expect(html).toContain('<p class="app">Ada &#38; &#60;Co&#62;</p>\n<h1>Identity verification</h1>');
+      expect(html.match(/<button/g) ?? []).toHaveLength(buttons);
+      expect(html).not.toMatch(/<script|https?:|url\(|src=|href=/i);
+      expect(res.headers.get('Content-Security-Policy')).toBe("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
     }
   });
 });
