@@ -329,6 +329,14 @@ curl http://localhost:3000/.well-known/holo-joining
 curl http://localhost:3000/v1/info
 ```
 
+With `didit_with_email`, send its email to yourself from the same config:
+
+```sh
+EMAIL_API_KEY=<provider API key> TEST_EMAIL_TO=<your address> npm run send-test-email -- config.json
+```
+
+The key comes only from `EMAIL_API_KEY`, and `email.api_key` in the file is ignored. The link in the email matches no join.
+
 ### Configuration reference
 
 The config file is JSON. Top-level keys `linker_registrations` and `http_gateways` are extracted before the rest is passed to `resolveConfig()`. All other fields map to the `ServiceConfig` interface in `src/config.ts`.

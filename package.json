@@ -53,7 +53,8 @@
     "test": "vitest run",
     "test:ui": "vitest run test/ui/",
     "test:watch": "vitest",
-    "gen-signing-key": "NODE_OPTIONS=--preserve-symlinks tsx scripts/gen-signing-key.ts"
+    "gen-signing-key": "NODE_OPTIONS=--preserve-symlinks tsx scripts/gen-signing-key.ts",
+    "send-test-email": "tsx scripts/send-test-email.ts"
   },
   "dependencies": {
     "@holo-host/lair": "^0.1.2",
