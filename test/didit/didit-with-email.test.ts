@@ -235,7 +235,7 @@ describe('didit_with_email join', () => {
 
   it.each([
     ['an unsigned join', 409, 'join_in_progress', (request: Request, agent: Agent) => postJson(request, '/v1/join', { agent_key: agent.agentKey })],
-    ['a signed join inside the email interval', 429, 'rate_limited', (request: Request, agent: Agent) => signedJoin(request, agent, EMAIL)],
+    ['a signed join with another email over the email limit', 429, 'rate_limited', (request: Request, agent: Agent) => signedJoin(request, agent, 'grace@example.com')],
     [
       'a signed partner join that fails at hc-auth',
       503,
@@ -251,6 +251,7 @@ describe('didit_with_email join', () => {
         hc_auth: HC,
         auth_methods: [{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }],
         delegated_verification: PARTNER,
+        didit: { ...DIDIT_SERVICE.didit!, max_emails_per_agent: 1 },
       },
       new HcAuthClient(HC),
     );
@@ -295,12 +296,26 @@ describe('didit_with_email join', () => {
     expect(await res.json()).toMatchObject({ status: 'pending', poll_interval_ms: 5000 });
   });
 
-  it('replaces a pending link session on a signed join, and its old link stops working', async () => {
+  it('gives a signed join with the email of the pending link session, in any letter case, that session as resume does, and replaces it on another email, whose old link stops working', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, ctx, emails, agent, ...first } = await joinedApp();
-    later(61_000);
-    const second = await joined(request, emails, agent);
+    const { request, ctx, emails, didit, agent, ...first } = await joinedApp();
+    await pressContinue(request, first.token);
+    didit.sessions[0].status = 'In Review';
+    later();
+    const reserve = vi.spyOn(ctx.sessionStore as LinkSessionStore, 'reserveEvents');
+    const resume = async () => postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
 
+    const unsigned = await postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: EMAIL }, delegated_verification: {} });
+    expect(unsigned.status).toBe(403);
+    const same = await signedJoin(request, agent, ' ada@EXAMPLE.com ');
+    expect(same.status).toBe(200);
+    expect(emails).toHaveLength(1);
+    expect(reserve.mock.calls.flatMap(([keys]) => keys).filter((key) => /^didit_(email|agent):/.test(key))).toEqual([]);
+    const back = await same.json();
+    expect(back).toMatchObject({ session: first.session, challenges: [{ metadata: { state: 'in_review' } }] });
+    expect(back).toEqual(await (await resume()).json());
+
+    const second = await joined(request, emails, agent, 'grace@example.com');
     expect(second.session).not.toBe(first.session);
     expect(await ctx.sessionStore.get(first.session)).toBeNull();
     const old = await request(`/v1/didit/${first.token}`);
@@ -308,8 +323,7 @@ describe('didit_with_email join', () => {
     expect(await old.text()).toContain('This link is no longer valid, or this join is finished. Open the app to continue.');
     expect((await request(`/v1/didit/${second.token}`)).status).toBe(200);
 
-    const resumed = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
-    expect((await resumed.json()).session).toBe(second.session);
+    expect((await (await resume()).json()).session).toBe(second.session);
   });
 
   it.each([

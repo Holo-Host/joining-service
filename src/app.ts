@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { ServiceConfig, RoleConfig } from './config.js';
 import { JoinRequestError, type AuthMethodPlugin, type JoinContext } from './auth-methods/plugin.js';
@@ -504,6 +504,21 @@ export function createApp(ctx: ServiceContext): Hono {
   const app = new Hono();
   const didit = diditMethod(ctx);
 
+  async function answerAsResume(c: Context, session: SessionData): Promise<Response> {
+    if (session.status === 'pending' && didit && holdsLink(session)) {
+      await didit.refresh(session);
+    }
+    await completeOrStayPending(ctx, session);
+
+    if (session.status === 'ready') {
+      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
+    }
+    if (session.status === 'rejected') {
+      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
+    }
+    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+  }
+
   // Without this, any throw escaping a handler becomes Hono's default bare
   // `Internal Server Error` text body -- no code for a client to branch on,
   // and no way to tell a rejected credential from a downstream failure that
@@ -597,8 +612,8 @@ export function createApp(ctx: ServiceContext): Hono {
     const { agentKey: agent_key, network: requestedNetwork } = scope;
 
     const signed = body.timestamp !== undefined || body.signature !== undefined;
+    const email = typeof claims?.email === 'string' ? claims.email : '';
     if (signed) {
-      const email = typeof claims?.email === 'string' ? claims.email : '';
       const refused = await signatureError(ctx, agent_key, body.timestamp, body.signature, (t) => `join:${t}:${email}`);
       if (refused) return refused;
     } else if (didit && claims?.email && !body.delegated_verification) {
@@ -652,6 +667,9 @@ export function createApp(ctx: ServiceContext): Hono {
         'Use POST /v1/join/resume, or sign the join to start again',
         409,
       );
+    }
+    if (replacesLink && signed && !body.delegated_verification && didit?.sentTo(existing, email)) {
+      return answerAsResume(c, existing);
     }
     // A replaced link session is deleted only when this join writes its own,
     // so a refused join leaves the link working.
@@ -1195,19 +1213,7 @@ export function createApp(ctx: ServiceContext): Hono {
         404,
       );
     }
-
-    if (session.status === 'pending' && didit && holdsLink(session)) {
-      await didit.refresh(session);
-    }
-    await completeOrStayPending(ctx, session);
-
-    if (session.status === 'ready') {
-      return errorJson('agent_already_joined', ALREADY_JOINED, 409);
-    }
-    if (session.status === 'rejected') {
-      return c.json({ session: session.id, status: 'rejected', reason: session.reason });
-    }
-    return c.json({ session: session.id, status: 'pending', ...pendingView(session) });
+    return answerAsResume(c, session);
   });
 
   // ---- POST /v1/reconnect ----

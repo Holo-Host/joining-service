@@ -245,6 +245,11 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     return this.findByHash(credential, (link, hash) => link.done_hash === hash);
   }
 
+  sentTo(session: SessionData, email: string): boolean {
+    const subject = subjectId(email, this.config.subject_key);
+    return session.challenges.some((cs) => cs.link?.subject_id === subject);
+  }
+
   async resend(session: SessionData, cs: ChallengeState): Promise<void> {
     const link = cs.link!;
     const now = Date.now();

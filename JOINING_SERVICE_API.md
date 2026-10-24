@@ -267,6 +267,8 @@ The client sends its agent key and optional identity claims. The server determin
 }
 ```
 
+**Response** (`200 OK`): a signed join without `delegated_verification` whose `claims.email` matches the email of the agent's pending `didit_with_email` join, ignoring surrounding spaces and letter case, answers as `POST /v1/join/resume` (Section 3.16) does. No email goes out.
+
 **Response** (`403 Forbidden`) — rejected (see Errors below):
 ```json
 {
@@ -302,7 +304,7 @@ The client sends its agent key and optional identity claims. The server determin
 | 400 | `signature_required` | `didit_with_email` is configured and the join carries `claims.email` without `timestamp` and `signature`. A join that carries `delegated_verification` is exempt. |
 | 403 | `join_rejected` | Join was rejected (agent not on the named network's `allowed_agents`, agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
 | 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
-| 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join to replace the session. |
+| 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join: another email replaces the session. |
 | 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
 | 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth or linker step failed. Nothing was created. |
 
@@ -1100,7 +1102,7 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 
 `POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting a timestamp within `reconnect.timestamp_tolerance_seconds` (default 300) of server time and no more than 30 seconds ahead of it. Ready sessions do not expire, so a reconnect request observed anywhere, such as a proxy log, a debug capture or a compromised client, can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
 
-A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Every signed route takes `timestamp` only as an ISO 8601 date and time with seconds and a zone, such as `2026-10-22T18:15:41.764Z`, and refuses any other form as malformed, so one route's signed message cannot pass as another's timestamp. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope.
+A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Every signed route takes `timestamp` only as an ISO 8601 date and time with seconds and a zone, such as `2026-10-22T18:15:41.764Z`, and refuses any other form as malformed, so one route's signed message cannot pass as another's timestamp. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope, unless that one is a `didit_with_email` join with the same email: then it yields that join's token, as a replayed resume does.
 
 Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to sign at least the agent key and a server-issued nonce, so that a captured signature cannot be replayed at all.
 
