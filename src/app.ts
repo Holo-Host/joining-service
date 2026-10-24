@@ -574,7 +574,7 @@ export function createApp(ctx: ServiceContext): Hono {
     return errorJson('internal_error', 'Internal server error', 500);
   });
 
-  app.use('*', cors());
+  app.use('*', cors({ exposeHeaders: ['Retry-After'] }));
 
   app.use('*', async (c, next) => {
     await next();

@@ -402,6 +402,7 @@ describe('didit_with_email email limits', () => {
     const res = await signedJoin(request, await signingAgent(), ' ada@EXAMPLE.com ');
     expect(res.status).toBe(429);
     expect((await res.json()).error.code).toBe('rate_limited');
+    expect(res.headers.get('Access-Control-Expose-Headers')).toBe('Retry-After');
     const retry = Number(res.headers.get('Retry-After'));
     expect(retry).toBeGreaterThan(86_400 - 6 * 61);
     expect(retry).toBeLessThanOrEqual(86_400);
