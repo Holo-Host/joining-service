@@ -85,11 +85,6 @@ export interface DiditWithEmailDeps {
   happName: string;
 }
 
-/** An agent key shortened as the app shows it. */
-export function shortAgentKey(agentKey: string): string {
-  return `${agentKey.slice(0, 8)}…${agentKey.slice(-6)}`;
-}
-
 /** A time as `28 October 2026, 14:02 UTC`. */
 export function formatUtc(ms: number): string {
   const d = new Date(ms);
@@ -474,7 +469,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
         network: link.network_name,
         link: `${this.baseUrl}/v1/didit/${token}`,
         expires_at: formatUtc(expiresAt),
-        agent_key: shortAgentKey(agentKey),
+        agent_key: agentKey,
       });
       await this.transport.send(email, message.subject, message.text, { html: message.html, senderName: this.happName });
     } catch (err) {
