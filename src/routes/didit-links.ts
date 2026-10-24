@@ -37,7 +37,6 @@ export function createDiditRoutes(
     const { session, cs } = found;
     return pages.landing({
       network: cs.link!.network_name,
-      startedAt: session.created_at,
       agentKey: session.agent_key,
       state: cs.link!.state,
     });

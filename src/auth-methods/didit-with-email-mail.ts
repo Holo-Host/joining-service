@@ -1,16 +1,18 @@
-import { CARD, FONT, escapeHtml } from './didit-with-email-card.js';
+import { CARD, FONT, MONO, escapeHtml } from './didit-with-email-card.js';
 
 const DEFAULT_SUBJECT = 'Verify your identity to join {{network}}';
-const DEFAULT_TEMPLATE = `Someone started joining {{network}} with this email address.
+const DEFAULT_TEMPLATE = `Request to verify your identity to join {{network}} with this email address.
 
-This request is for the device with agent key {{agent_key}}. Continue only if that is the key shown in your app.
+For the device with this agent key:
+{{agent_key}}
+Continue only if that is the key shown in your app.
 
 To finish, open this link and verify your identity with Didit:
 {{link}}
 
 You can open the link on this device or on your phone. It works until {{expires_at}}.
 
-If you did not start this, ignore this email. Do not verify your identity for a join that you did not start.`;
+If you did not start this, ignore this email.`;
 
 export interface LinkEmailValues {
   network: string;
@@ -26,7 +28,11 @@ export interface LinkEmail {
 }
 
 const LINK_LINE = /^\s*\{\{link\}\}\s*$/;
-const TEXT_STYLE = `margin:0 0 16px;font-family:${FONT};font-size:15px;line-height:22px;color:${CARD.text}`;
+const KEY_LINE = /^\s*\{\{agent_key\}\}\s*$/;
+const WRAP = 'overflow-wrap:anywhere;word-break:break-word';
+const TEXT_STYLE = `margin:0 0 16px;font-family:${FONT};font-size:15px;line-height:22px;color:${CARD.text};${WRAP}`;
+const LEAD_STYLE = `${TEXT_STYLE};font-weight:600;color:${CARD.heading}`;
+const CAUTION_STYLE = `${TEXT_STYLE};margin-top:4px;font-size:13px;line-height:20px;color:${CARD.muted}`;
 
 function fill(template: string, values: LinkEmailValues): string {
   return template.replace(/\{\{(network|link|expires_at|agent_key)\}\}/g, (_, key: keyof LinkEmailValues) => values[key]);
@@ -41,24 +47,35 @@ function button(link: string): string {
 <p style="${TEXT_STYLE};margin-top:12px;font-size:13px;line-height:20px;word-break:break-all"><a href="${href}" style="color:${CARD.text};text-decoration:underline">${href}</a></p>`;
 }
 
+function keyBox(agentKey: string): string {
+  return `<p style="${TEXT_STYLE};padding:10px 12px;border:1px solid ${CARD.keyBorder};border-radius:${CARD.buttonRadius};background-color:${CARD.keyBox};font-family:${MONO};font-size:13px;line-height:20px;color:${CARD.heading};text-align:left;word-break:break-all;-webkit-user-select:all;user-select:all">${escapeHtml(agentKey)}</p>`;
+}
+
 function bodyHtml(template: string, values: LinkEmailValues): string {
+  const paragraphs = template.split(/\r?\n[ \t]*\r?\n/).filter((p) => p.trim());
   const out: string[] = [];
-  for (const paragraph of template.split(/\r?\n[ \t]*\r?\n/)) {
-    let lines: string[] = [];
+  paragraphs.forEach((paragraph, i) => {
+    const lines = paragraph.split(/\r?\n/);
+    const caution = i > 0 && i === paragraphs.length - 1 && !lines.some((line) => LINK_LINE.test(line));
+    const style = i === 0 ? LEAD_STYLE : caution ? CAUTION_STYLE : TEXT_STYLE;
+    let pending: string[] = [];
     const flush = () => {
-      if (lines.length) out.push(`<p style="${TEXT_STYLE}">${lines.join('<br>')}</p>`);
-      lines = [];
+      if (pending.length) out.push(`<p style="${style}">${pending.join('<br>')}</p>`);
+      pending = [];
     };
-    for (const line of paragraph.split(/\r?\n/)) {
+    for (const line of lines) {
       if (LINK_LINE.test(line)) {
         flush();
         out.push(button(values.link));
+      } else if (KEY_LINE.test(line)) {
+        flush();
+        out.push(keyBox(values.agent_key));
       } else if (line.trim()) {
-        lines.push(escapeHtml(fill(line, values)));
+        pending.push(escapeHtml(fill(line, values)));
       }
     }
     flush();
-  }
+  });
   return out.join('\n');
 }
 
@@ -85,7 +102,7 @@ export function renderLinkEmail(
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${CARD.card}" style="max-width:${CARD.width}px;background-color:${CARD.card};border-radius:${CARD.cardRadius}"><tr>
 <td align="center" style="padding:32px 24px 16px;text-align:center">
 <p style="${TEXT_STYLE};margin-bottom:6px;font-size:14px;font-weight:600;letter-spacing:.02em">${escapeHtml(happName)}</p>
-<h1 style="margin:0 0 20px;font-family:${FONT};font-size:22px;line-height:28px;font-weight:600;color:${CARD.heading}">${escapeHtml(subject)}</h1>
+<h1 style="margin:0 0 20px;font-family:${FONT};font-size:22px;line-height:28px;font-weight:600;color:${CARD.heading};${WRAP}">${escapeHtml(subject)}</h1>
 ${bodyHtml(template, values)}
 </td></tr></table>
 <!--[if mso]></td></tr></table><![endif]-->
