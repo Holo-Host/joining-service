@@ -170,6 +170,9 @@ function validateDiditWithEmail(partial: Partial<ServiceConfig>): void {
   if (!partial.base_url || !URL.canParse(partial.base_url) || new URL(partial.base_url).protocol !== 'https:') {
     throw new Error('config: didit_with_email requires an https base_url, which its links start with');
   }
+  if (/[\r\n<>,"\\]/.test(partial.happ!.name)) {
+    throw new Error('config: didit_with_email sends as happ.name, which must not hold CR, LF, <, >, a comma, " or \\');
+  }
 }
 
 export function isValidDnaHash(hash: string): boolean {
