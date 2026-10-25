@@ -329,6 +329,14 @@ curl http://localhost:3000/.well-known/holo-joining
 curl http://localhost:3000/v1/info
 ```
 
+With `didit_with_email`, send its email to yourself from the same config:
+
+```sh
+EMAIL_API_KEY=<provider API key> TEST_EMAIL_TO=<your address> npm run send-test-email -- config.json
+```
+
+The key comes only from `EMAIL_API_KEY`, and `email.api_key` in the file is ignored. The link in the email matches no join.
+
 ### Configuration reference
 
 The config file is JSON. Top-level keys `linker_registrations` and `http_gateways` are extracted before the rest is passed to `resolveConfig()`. All other fields map to the `ServiceConfig` interface in `src/config.ts`.
@@ -350,7 +358,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `roles` | Record\<role_name, {dna_hash?, modifiers?}\> | — | Role-centric configuration: `{role_name: {dna_hash?: "...", modifiers?: {...}}}`. `dna_hash` is required per-role only when `membrane_proof.enabled` is true (it binds the membrane proof to a network); when present it is always validated. See [Obtaining the DNA hash](#obtaining-the-dna-hash). |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
-| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` and `didit_with_email` auth |
+| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` and `didit_with_email` auth. Postmark and SendGrid send with link and open tracking off, and SendGrid with subscription tracking off too. |
 | `email.api_key` | string | — | Postmark or SendGrid API token |
 | `email.from` | string | — | Sender address |
 | `email.template` | string | — | Custom email template |

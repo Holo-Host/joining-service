@@ -5,11 +5,14 @@ import { subjectId } from '../../src/didit/client.js';
 import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { DiditWithEmailAuthMethod, NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
+import { TEXT, linkPages } from '../../src/auth-methods/didit-with-email-pages.js';
+import { renderLinkEmail } from '../../src/auth-methods/didit-with-email-mail.js';
 import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
 import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
 import type { ServiceConfig } from '../../src/config.js';
 import type { UrlProvider } from '../../src/urls/provider.js';
 import type { LinkSessionStore } from '../../src/session/store.js';
+import type { DiditWithEmailState } from '../../src/types.js';
 import type { FakeDidit, FakeSession } from './fake-didit.js';
 import { BASE_URL, DIDIT_SERVICE, SUBJECT_KEY, WORKFLOW_ID } from './fixtures.js';
 import {
@@ -64,10 +67,6 @@ function captureLogs(levels: ('log' | 'warn' | 'error' | 'info' | 'debug')[] = [
   return lines;
 }
 
-function shortKey(agentKey: string) {
-  return `${agentKey.slice(0, 8)}…${agentKey.slice(-6)}`;
-}
-
 const PARTNER_KEY = 'partner-key';
 const PARTNER = {
   trusted_partners: [
@@ -109,8 +108,16 @@ function later(ms = 301_000) {
   vi.setSystemTime(Date.now() + ms);
 }
 
+function linkersAt(urls: string[]): UrlProvider {
+  return {
+    getLinkerRegistrations: async () =>
+      urls.map((url, i) => ({ linker_url: { url: `wss://l${i + 1}.example.com:8090` }, admin: { url, secret: `s${i}` } })),
+    getHttpGateways: async () => undefined,
+  };
+}
+
 describe('didit_with_email join', () => {
-  it('emails one link under base_url to the trimmed address, naming the network, the short agent key and the expiry, and calls no Didit', async () => {
+  it('emails one link under base_url to the trimmed address, naming the network, the full agent key and the expiry, and calls no Didit', async () => {
     const { request, emails, didit } = await diditApp();
     const agent = await signingAgent();
     const { join } = await joined(request, emails, agent, `  ${EMAIL}\t`);
@@ -120,11 +127,15 @@ describe('didit_with_email join', () => {
     expect(email.to).toBe(EMAIL);
     expect(email.subject).toBe('Verify your identity to join Test App');
     expect(email.body).toContain(`${BASE_URL}/v1/didit/${linkToken(email)}`);
+    expect(email.body).toContain('Request to verify your identity to join Test App with this email address.');
     expect(email.body).toContain(
-      `This request is for the device with agent key ${shortKey(agent.agentKey)}. Continue only if that is the key shown in your app.`,
+      `For the device with this agent key:\n${agent.agentKey}\nContinue only if that is the key shown in your app.`,
     );
     expect(email.body).toMatch(/It works until \d{1,2} [A-Z][a-z]+ \d{4}, \d{2}:\d{2} UTC\./);
     expect(email.body).not.toMatch(/\b\d{6}\b/);
+    expect(email.senderName).toBe('Test App');
+    expect(email.html).toContain(`user-select:all">${agent.agentKey}</p>`);
+    expect(email.html).toContain(`>${BASE_URL}/v1/didit/${linkToken(email)}</a>`);
     expect(didit.requests).toHaveLength(0);
 
     expect(join.status).toBe('pending');
@@ -146,7 +157,7 @@ describe('didit_with_email join', () => {
     expect(network).toBe('Test App');
     expect(link).toMatch(/^https:\/\/join\.example\.com\/v1\/didit\/[A-Za-z0-9_-]{43}$/);
     expect(expires).toMatch(/UTC$/);
-    expect(key).toBe(shortKey(agent.agentKey));
+    expect(key).toBe(agent.agentKey);
     expect(untouched).toBe('{{code}}');
   });
 
@@ -227,7 +238,7 @@ describe('didit_with_email join', () => {
 
   it.each([
     ['an unsigned join', 409, 'join_in_progress', (request: Request, agent: Agent) => postJson(request, '/v1/join', { agent_key: agent.agentKey })],
-    ['a signed join inside the email interval', 429, 'rate_limited', (request: Request, agent: Agent) => signedJoin(request, agent, EMAIL)],
+    ['a signed join with another email over the email limit', 429, 'rate_limited', (request: Request, agent: Agent) => signedJoin(request, agent, 'grace@example.com')],
     [
       'a signed partner join that fails at hc-auth',
       503,
@@ -243,6 +254,7 @@ describe('didit_with_email join', () => {
         hc_auth: HC,
         auth_methods: [{ any_of: ['agent_allow_list', 'delegated_verification', 'didit_with_email'] }],
         delegated_verification: PARTNER,
+        didit: { ...DIDIT_SERVICE.didit!, max_emails_per_agent: 1 },
       },
       new HcAuthClient(HC),
     );
@@ -287,12 +299,26 @@ describe('didit_with_email join', () => {
     expect(await res.json()).toMatchObject({ status: 'pending', poll_interval_ms: 5000 });
   });
 
-  it('replaces a pending link session on a signed join, and its old link stops working', async () => {
+  it('gives a signed join with the email of the pending link session, in any letter case, that session as resume does, and replaces it on another email, whose old link stops working', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { request, ctx, emails, agent, ...first } = await joinedApp();
-    later(61_000);
-    const second = await joined(request, emails, agent);
+    const { request, ctx, emails, didit, agent, ...first } = await joinedApp();
+    await pressContinue(request, first.token);
+    didit.sessions[0].status = 'In Review';
+    later();
+    const reserve = vi.spyOn(ctx.sessionStore as LinkSessionStore, 'reserveEvents');
+    const resume = async () => postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
 
+    const unsigned = await postJson(request, '/v1/join', { agent_key: agent.agentKey, claims: { email: EMAIL }, delegated_verification: {} });
+    expect(unsigned.status).toBe(403);
+    const same = await signedJoin(request, agent, ' ada@EXAMPLE.com ');
+    expect(same.status).toBe(200);
+    expect(emails).toHaveLength(1);
+    expect(reserve.mock.calls.flatMap(([keys]) => keys).filter((key) => /^didit_(email|agent):/.test(key))).toEqual([]);
+    const back = await same.json();
+    expect(back).toMatchObject({ session: first.session, challenges: [{ metadata: { state: 'in_review' } }] });
+    expect(back).toEqual(await (await resume()).json());
+
+    const second = await joined(request, emails, agent, 'grace@example.com');
     expect(second.session).not.toBe(first.session);
     expect(await ctx.sessionStore.get(first.session)).toBeNull();
     const old = await request(`/v1/didit/${first.token}`);
@@ -300,8 +326,7 @@ describe('didit_with_email join', () => {
     expect(await old.text()).toContain('This link is no longer valid, or this join is finished. Open the app to continue.');
     expect((await request(`/v1/didit/${second.token}`)).status).toBe(200);
 
-    const resumed = await postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)) });
-    expect((await resumed.json()).session).toBe(second.session);
+    expect((await (await resume()).json()).session).toBe(second.session);
   });
 
   it.each([
@@ -367,6 +392,35 @@ describe('didit_with_email join', () => {
   });
 });
 
+describe('the didit_with_email email', () => {
+  it('escapes every value and the template, sets the first paragraph bold and a last one without the button small, wraps long words, and makes a line holding only the link a button over the URL and one holding only the key a selectable box', () => {
+    const link = 'https://join.example.com/v1/didit/a&b';
+    const href = 'https://join.example.com/v1/didit/a&#38;b';
+    const { subject, text, html } = renderLinkEmail(
+      'Ada & Co',
+      {
+        email_subject: 'Join <i>{{network}}</i>',
+        email_template: '<b>Hi</b> {{network}}, key {{agent_key}}\n{{link}}\n\n{{agent_key}}\n\nUntil {{expires_at}}. See {{link}}',
+      },
+      { network: '<img src=x>', link, expires_at: '1 May', agent_key: '"key"' },
+    );
+    expect(subject).toBe('Join <i><img src=x></i>');
+    expect(text).toBe(`<b>Hi</b> <img src=x>, key "key"\n${link}\n\n"key"\n\nUntil 1 May. See ${link}`);
+    expect(html).not.toMatch(/<(i|b|img|script)\b/);
+    expect(html).toContain('>Ada &#38; Co</p>');
+    expect(html).toContain('>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62;</h1>');
+    expect(html).toContain('font-weight:600;color:#ffffff">&#60;b&#62;Hi&#60;/b&#62; &#60;img src=x&#62;, key &#34;key&#34;</p>');
+    expect(html).toContain('user-select:all">&#34;key&#34;</p>');
+    expect(html.match(/>Verify your identity<\/a>/g)).toHaveLength(1);
+    expect(html.match(new RegExp(`<a href="${href}"`, 'g'))).toHaveLength(2);
+    expect(html).toContain(`>${href}</a></p>`);
+    expect(html).toContain(`font-size:13px;line-height:20px;color:#8e8e93">Until 1 May. See ${href}</p>`);
+
+    const endsOnButton = renderLinkEmail('A', { email_template: 'Hi\n\nOpen it:\n{{link}}' }, { network: 'N', link, expires_at: '1 May', agent_key: 'k' });
+    expect(endsOnButton.html).toContain('color:#bbbbbc;overflow-wrap:anywhere;word-break:break-word">Open it:</p>');
+  });
+});
+
 describe('didit_with_email email limits', () => {
   it('refuses the sixth email to one address in 24 hours with Retry-After, counting no refused email', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -380,6 +434,7 @@ describe('didit_with_email email limits', () => {
     const res = await signedJoin(request, await signingAgent(), ' ada@EXAMPLE.com ');
     expect(res.status).toBe(429);
     expect((await res.json()).error.code).toBe('rate_limited');
+    expect(res.headers.get('Access-Control-Expose-Headers')).toBe('Retry-After');
     const retry = Number(res.headers.get('Retry-After'));
     expect(retry).toBeGreaterThan(86_400 - 6 * 61);
     expect(retry).toBeLessThanOrEqual(86_400);
@@ -402,20 +457,20 @@ describe('didit_with_email email limits', () => {
 });
 
 describe('GET /v1/didit/{token}', () => {
-  it('shows the request, the short key and Continue, and changes and calls nothing', async () => {
+  it('shows the request first, the full key with a Copy button that only the script shows, Continue and the caution, and changes and calls nothing', async () => {
     const { request, ctx, didit, agent, session, token } = await joinedApp();
     const before = await ctx.sessionStore.get(session);
 
     const res = await request(`/v1/didit/${token}`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('Someone started joining Test App with this email address on');
     expect(html).toContain(
-      `This request is for the device with agent key ${shortKey(agent.agentKey)}. Continue only if that is the key shown in your app.`,
+      '<h1>Identity verification</h1>\n<p class="lead">Request to verify your identity to join Test App with this email address.</p>',
     );
-    expect(html).toContain('Did you start joining Test App? If not, close this page and do not continue.');
+    expect(html).toContain(`<code id="key">${agent.agentKey}</code><button type="button" id="copy" aria-live="polite" hidden>Copy</button>`);
+    expect(html).toContain('<p>Continue only if that is the key shown in your app.</p>');
     expect(html).toContain('<form method="post"><button type="submit">Continue</button></form>');
-    expect(html).not.toContain('<script');
+    expect(html).toContain('<p class="caution">If you did not start this, close this page and do not continue.</p>');
     expect(res.headers.get('Cache-Control')).toBe('no-store');
     expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
     expect(res.headers.get('X-Robots-Tag')).toBe('noindex');
@@ -435,6 +490,38 @@ describe('GET /v1/didit/{token}', () => {
       expect(res.headers.get('Content-Type')).toContain('text/html');
       expect(await res.text()).toContain('Identity verification is not available right now.');
     }
+  });
+});
+
+describe('link pages', () => {
+  const landing = { network: 'Test App', agentKey: `uhCAk${'a'.repeat(48)}` };
+
+  it('shows each page as one card under happ.name and the heading, with one CSP and no remote resource, Copy on every landing page and Continue only where it can continue', async () => {
+    const pages = linkPages('Ada & <Co>');
+    const states: DiditWithEmailState[] = ['link_sent', 'in_progress', 'in_review', 'approved', 'declined', 'expired'];
+    const shown = [
+      ...states.map((state) => [pages.landing({ ...landing, state }), state === 'in_review' || state === 'approved' ? 1 : 2, 1] as const),
+      ...states.map((state) => [pages.done(state), 0, 0] as const),
+      ...Object.values(TEXT).map((text) => [pages.message(text, 503), 0, 0] as const),
+    ];
+    const csp = pages.landing({ ...landing, state: 'link_sent' }).headers.get('Content-Security-Policy');
+    for (const [res, buttons, scripts] of shown) {
+      const html = await res.text();
+      expect(html).toContain('<p class="app">Ada &#38; &#60;Co&#62;</p>\n<h1>Identity verification</h1>\n<p class="lead">');
+      expect(html.match(/<button/g) ?? []).toHaveLength(buttons);
+      expect(html.match(/<script>/g) ?? []).toHaveLength(scripts);
+      expect(html.replace(/<script>.*?<\/script>/s, '')).not.toMatch(/<script|https?:|url\(|src=|href=/i);
+      expect(res.headers.get('Content-Security-Policy')).toBe(csp);
+    }
+  });
+
+  it('allows through the CSP only the hash of the inline script', async () => {
+    const res = linkPages('Test App').landing({ ...landing, state: 'link_sent' });
+    const [script] = (await res.text()).match(/(?<=<script>).*?(?=<\/script>)/s)!;
+    const hash = createHash('sha256').update(script).digest('base64');
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${hash}'; frame-ancestors 'none'`,
+    );
   });
 });
 
@@ -778,7 +865,7 @@ describe('the ready path of a didit_with_email join', () => {
     didit.sessions[0].status = 'Approved';
     later();
 
-    expect((await request(`/v1/join/${session}/status`)).status).toBe(503);
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ completed: true, metadata: { state: 'approved' } }] });
     const stored = (await ctx.sessionStore.get(session))!;
     expect(stored.status).toBe('pending');
     expect(stored.challenges[0].completed).toBe(true);
@@ -797,15 +884,38 @@ describe('the ready path of a didit_with_email join', () => {
     expect(register).toHaveBeenCalledTimes(3);
   });
 
+  it.each<[string, Partial<ServiceConfig>, HcAuthClient | undefined, string]>([
+    ['hc-auth', { hc_auth: HC }, new HcAuthClient(HC), `${HC.url}/`],
+    ['a linker', { linker_auth: { capabilities: ['dht_read'], required: true } }, undefined, 'https://l1.example.com/admin/agents'],
+  ])('answers status with the approved join still pending when %s never answers in 5 seconds', async (_name, config, hcAuth, hung) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const lines = captureLogs(['log', 'warn', 'error']);
+    const { request, emails, didit } = await diditApp(config, hcAuth, linkersAt(['https://l1.example.com']));
+    const agent = await signingAgent();
+    const { session, token } = await joined(request, emails, agent);
+    await pressContinue(request, token);
+    didit.sessions[0].status = 'Approved';
+    later();
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!url.startsWith(hung)) return didit.respond(url, init ?? {});
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)));
+    });
+    // Fake timers cannot advance AbortSignal.timeout, so it is cut to 1 ms and the test checks the 5000 ms asked for.
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const bound = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(1));
+
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ completed: true, metadata: { state: 'approved' } }] });
+    expect(bound).toHaveBeenLastCalledWith(5000);
+    expect(lines.join('\n')).toContain(`[ready path] agent ${agent.agentKey.slice(0, 20)}... stays pending`);
+    expect(lines.join('\n')).not.toContain(session);
+  });
+
   it('authorizes the agent on every linker when the join turns ready, and not before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const linkers = ['https://l1.example.com', 'https://l2.example.com'];
-    const urlProvider: UrlProvider = {
-      getLinkerRegistrations: async () =>
-        linkers.map((url, i) => ({ linker_url: { url: `wss://l${i + 1}.example.com:8090` }, admin: { url, secret: `s${i}` } })),
-      getHttpGateways: async () => undefined,
-    };
-    const { request, emails, didit } = await diditApp({ linker_auth: { capabilities: ['dht_read'] } }, undefined, urlProvider);
+    const { request, emails, didit } = await diditApp({ linker_auth: { capabilities: ['dht_read'] } }, undefined, linkersAt(linkers));
     const authorized: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -870,7 +980,7 @@ describe('the ready path of a didit_with_email join', () => {
     const { session } = await join.json();
 
     expect(emails[0].subject).toBe('Verify your identity to join Acme');
-    expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('Someone started joining Acme');
+    expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('Request to verify your identity to join Acme');
     const resume = async (extra: Record<string, unknown>) =>
       postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), ...extra });
     expect((await (await resume({ network: 'acme-net' })).json()).session).toBe(session);

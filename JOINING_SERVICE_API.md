@@ -267,6 +267,8 @@ The client sends its agent key and optional identity claims. The server determin
 }
 ```
 
+**Response** (`200 OK`): a signed join without `delegated_verification` whose `claims.email` matches the email of the agent's pending `didit_with_email` join, ignoring surrounding spaces and letter case, answers as `POST /v1/join/resume` (Section 3.16) does. No email goes out.
+
 **Response** (`403 Forbidden`) — rejected (see Errors below):
 ```json
 {
@@ -302,9 +304,9 @@ The client sends its agent key and optional identity claims. The server determin
 | 400 | `signature_required` | `didit_with_email` is configured and the join carries `claims.email` without `timestamp` and `signature`. A join that carries `delegated_verification` is exempt. |
 | 403 | `join_rejected` | Join was rejected (agent not on the named network's `allowed_agents`, agent not eligible, invalid invite code, no satisfiable auth method). Nothing was created; the response body is the standard error shape with the reason in `error.message`. |
 | 409 | `agent_already_joined` | This agent key has already completed joining this network. Use `POST /v1/reconnect` instead. |
-| 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join to replace the session. |
+| 409 | `join_in_progress` | An unsigned join without `delegated_verification` over a pending session that holds a `didit_with_email` challenge. Use `POST /v1/join/resume`, or sign the join: another email replaces the session. |
 | 429 | `rate_limited` | Too many join attempts. For `didit_with_email`, an email limit (Section 8): `Retry-After` gives the seconds to wait, and no email went out. In an `any_of` group, only when no other method admits the agent. |
-| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth step failed. Nothing was created. |
+| 503 | `service_unavailable` | The `didit_with_email` email could not be sent (in an `any_of` group, only when no other method admits the agent), or a required hc-auth or linker step failed. Nothing was created. |
 
 A join refused after its invite code passed leaves the code unused.
 
@@ -379,7 +381,7 @@ For EVM signature challenges, `response` is the hex-encoded signature:
 | 410 | `challenge_expired` | Challenge has expired; client should `POST /join` again |
 | 422 | `verification_failed` | Response was incorrect (e.g., wrong code). A `didit_with_email` challenge answers this, with "Open the link in the email to continue", and the call counts toward the attempt limit. |
 | 429 | `rate_limited` | Too many verification attempts |
-| 503 | `service_unavailable` | The challenge passed, but a required hc-auth step failed. The session stays pending, and a status poll or the same verify again retries. |
+| 503 | `service_unavailable` | The challenge passed, but a required hc-auth or linker step failed. The session stays pending, and a status poll or the same verify again retries. |
 
 ---
 
@@ -414,13 +416,14 @@ The `/status` endpoint returns the current session state, including status and o
 
 For an open `didit_with_email` challenge with a Didit session, status first reads Didit's decision, at most once per read interval (Section 8). An approved decision for this join completes the challenge and makes the session ready. While Didit is unreachable, the stored state comes back and the next poll tries again.
 
+Each request to hc-auth or a linker times out after 5 seconds. When a required hc-auth or linker step fails, the session stays `pending` with its completed challenges, and the next poll retries.
+
 **Errors**:
 
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 401 | `invalid_session` | Session token is invalid or expired |
 | 410 | `session_expired` | Session has expired entirely |
-| 503 | `service_unavailable` | A session whose every requirement is met could not be made ready at a required hc-auth step. The session stays pending, and the next poll retries. |
 
 ---
 
@@ -912,7 +915,7 @@ The way back into a join for a client that lost its session token, for example a
 { "session": "js_a1b2c3d4e5f6", "status": "rejected", "reason": "Agent blocked by administrator" }
 ```
 
-A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`.
+A pending session whose every requirement is already met (an earlier step to make it ready failed) is made ready first, and the call then answers `409`. If a required step fails again, the call answers the session as pending.
 
 **Errors**:
 
@@ -925,7 +928,6 @@ A pending session whose every requirement is already met (an earlier step to mak
 | 400 | `unknown_network` | `network` is present but not a string, or does not match the network-id format |
 | 404 | `join_not_found` | No session for this agent key in this scope. Start a join with `POST /v1/join`. |
 | 409 | `agent_already_joined` | The session is ready, before or after this call. Use `POST /v1/reconnect`, then provision. |
-| 503 | `service_unavailable` | Making the session ready failed at a required hc-auth step. The session stays pending. |
 
 ---
 
@@ -953,9 +955,9 @@ Sends a `didit_with_email` challenge's email again, with a new link. Earlier lin
 
 ### 3.18 `/v1/didit/{token}` — Link Pages
 
-Server-rendered HTML for the person who opens the emailed link, on any device. `{token}` and the done page's `{credential}` are the only credentials. No page runs script, and every page sends `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'`. An unknown, expired or finished token, and an unknown or expired credential, get one `404` page: "This link is no longer valid, or this join is finished. Open the app to continue."
+Server-rendered HTML for the person who opens the emailed link, on any device. `{token}` and the done page's `{credential}` are the only credentials. Every page sends `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-…'; frame-ancestors 'none'`. The hash allows only the landing page's inline script, which shows its Copy button, and the page works without it. When the browser refuses the copy, the button gives way to a line asking the person to select the key and copy it. An unknown, expired or finished token, and an unknown or expired credential, get one `404` page: "This link is no longer valid, or this join is finished. Open the app to continue."
 
-- **`GET /v1/didit/{token}`** shows the network, the time the join started, the joining agent key in short form (`uhCAk3fQ…9xQ2ab`), and, unless Didit has approved it or is reviewing it, a warning for a person who did not start the join and a Continue button. It changes nothing and calls nobody, so a mail scanner that fetches the link starts nothing.
+- **`GET /v1/didit/{token}`** shows the network and the full joining agent key in a box that selects the whole key, with a Copy button. Unless Didit has approved it or is reviewing it, it also shows a Continue button and a caution for a person who did not start the join. It changes nothing and calls nobody, so a mail scanner that fetches the link starts nothing.
 - **`POST /v1/didit/{token}`** is the Continue button, with no fields. It completes the challenge from this key's approval in Didit, takes up this key's session in review, or answers `303 See Other` to a Didit session it created or reused. It answers `403` when the email has no verification attempts left, which rejects the join, `409` while another agent key's verification of this email is under way, and `503` while Didit is unreachable, changing nothing. One challenge's Continue runs at most once per 10 seconds and 10 times an hour, whether it reaches Didit or retries a join that Didit already approved. A Continue beyond that answers the same `503` page.
 - **`GET /v1/didit/done/{credential}`** is Didit's callback. Its credential opens only this page and does not give back the token. The page ignores its query string and says where the verification stands. For a pending join it reads the decision at most once per read interval and records it, so the app's next status call finishes the join. A ready join shows its stored state without a read, and a rejected join answers `403` with the reason. It works until the link expires.
 
@@ -1047,6 +1049,7 @@ The joining service must be callable from any origin (hApp UIs on arbitrary doma
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type
+Access-Control-Expose-Headers: Retry-After
 Access-Control-Max-Age: 86400
 ```
 
@@ -1100,7 +1103,7 @@ Withholding a fresh membrane proof from an agent that has already joined does no
 
 `POST /v1/reconnect` authenticates a caller by verifying an ed25519 signature over the request's `timestamp` and nothing else, accepting a timestamp within `reconnect.timestamp_tolerance_seconds` (default 300) of server time and no more than 30 seconds ahead of it. Ready sessions do not expire, so a reconnect request observed anywhere, such as a proxy log, a debug capture or a compromised client, can be replayed verbatim for the rest of that window and will be answered normally, including the network-scoped `session` token. That token is enough to call provision, which yields `network_config`, the hApp bundle URL, and a freshly minted membrane proof for the agent named in the replayed request.
 
-A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Every signed route takes `timestamp` only as an ISO 8601 date and time with seconds and a zone, such as `2026-10-22T18:15:41.764Z`, and refuses any other form as malformed, so one route's signed message cannot pass as another's timestamp. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope.
+A signed join signs `join:{timestamp}:{email}` and `POST /v1/join/resume` (Section 3.16) signs `resume:{timestamp}`, so a pair signed for one route is refused by the others. Every signed route takes `timestamp` only as an ISO 8601 date and time with seconds and a zone, such as `2026-10-22T18:15:41.764Z`, and refuses any other form as malformed, so one route's signed message cannot pass as another's timestamp. Join and resume accept the same window. A replayed resume yields only the token of a join bound to the signer's key. A replayed signed join can start a new join for the signer's key with the email it signed, but with any other claims and any `network`, replacing a pending one in that scope, unless that one is a `didit_with_email` join with the same email: then it yields that join's token, as a replayed resume does.
 
 Two things bound this. Requests are served over HTTPS (see Transport Security below), so the signature is not available to a passive network observer; and the tolerance is configurable, so a deployment whose clients have reliable clocks can narrow the window to a few seconds. Neither closes it, and neither bounds what follows: a token obtained this way stays usable indefinitely — ready sessions never expire, no endpoint revokes a session token, and the revocation check at provision only fires for sessions that used `hc_auth_approval`. The durable fix is to sign at least the agent key and a server-issued nonce, so that a captured signature cannot be replayed at all.
 
@@ -1216,7 +1219,7 @@ Config:
 | `required` | boolean | no | If `true`, a failure to communicate with hc-auth blocks provisioning. Default: `false` (non-fatal — hc-auth outage does not break joining) |
 | `forward_claims` | string[] | no | Claim keys to forward to hc-auth during registration (e.g. `["email", "phone"]`). When set, matching claims from the join session are included in the metadata payload sent to `PUT /request-auth/{pubkey}` and are also written to the record's `verified` field (see below). Only useful when other auth methods collect those claims (e.g. `email_code`, `sms_code`). Default: none |
 
-The forwarded claims are written twice. The metadata sent to `PUT /request-auth/{pubkey}` is public: anyone can call that route, so downstream services must not trust it. On every join that reaches `ready`, the service also calls the admin route `PUT /api/verified/{pubkey}` with the same claims. This replaces the record's `verified` field, the only field downstream services trust (for example, the voucher service reads `verified.email`). The write happens even when the key is already `authorized`, so a user who reinstalls with the same key, or who joined before `verified` existed, gets the field on their next join. When `hc_auth_approval` is in the method set, the service does not authorize the key itself, but it still writes `verified` when the session becomes `ready`. If the write fails and `required` is `true`, the join fails with `503 service_unavailable` and a polled session stays `pending`. If `required` is `false`, the failure is logged and the join proceeds without `verified`.
+The forwarded claims are written twice. The metadata sent to `PUT /request-auth/{pubkey}` is public: anyone can call that route, so downstream services must not trust it. On every join that reaches `ready`, the service also calls the admin route `PUT /api/verified/{pubkey}` with the same claims. This replaces the record's `verified` field, the only field downstream services trust (for example, the voucher service reads `verified.email`). The write happens even when the key is already `authorized`, so a user who reinstalls with the same key, or who joined before `verified` existed, gets the field on their next join. When `hc_auth_approval` is in the method set, the service does not authorize the key itself, but it still writes `verified` when the session becomes `ready`. If the write fails and `required` is `true`, the session does not become `ready`, as with any required hc-auth step that fails. If `required` is `false`, the failure is logged and the join proceeds without `verified`.
 
 `verified` is only as trustworthy as the configuration. The service copies claims by key name from the join request, so list in `forward_claims` only the claims that a configured method proves (`email` with `email_code` or `didit_with_email`, `phone` with `sms_code`). A forwarded claim that no method checks is written to `verified` unproven.
 
@@ -1304,9 +1307,9 @@ Config:
 | `max_emails_per_address` | number | no | Emails to one address in 24 hours. Default: 5 |
 | `max_emails_per_agent` | number | no | Emails for one agent key in 24 hours. Default: 5 |
 | `email_subject` | string | no | Takes the same placeholders as `email_template` but `{{link}}`. Default: `Verify your identity to join {{network}}` |
-| `email_template` | string | no | Plain-text body. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the joining key as `uhCAk3fQ…9xQ2ab`). Must contain `{{link}}` |
+| `email_template` | string | no | Body, sent as plain text and as HTML. The HTML escapes it and splits it into paragraphs on blank lines. It sets the first paragraph in bold and, when there are several, the last in small muted text unless it holds the button. A line that holds only `{{link}}` becomes a "Verify your identity" button over the plain URL, and a line that holds only `{{agent_key}}` a box that selects the whole key. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the full joining key). Must contain `{{link}}` |
 
-`resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, or beside `email_code`. A `didit` section without the method changes nothing.
+The email's sender name is `happ.name`. `resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, beside `email_code`, or with a `happ.name` that holds CR, LF, `<`, `>`, a comma, `"` or `\`. A `didit` section without the method changes nothing.
 
 **What reaches hc-auth.** The join reaches hc-auth exactly as an `email_code` join does. Once it is ready, the service registers the agent key, and `hc_auth.forward_claims: ["email"]` puts `claims.email`, as sent, into the registration metadata. With `hc_auth_approval` among the methods, hc-auth authorizes the key and the service registers nothing. Nothing from Didit reaches hc-auth.
 

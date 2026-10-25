@@ -56,6 +56,7 @@ describe('Email verification flow', () => {
 
     // Step 2: Read code from file
     const code = readCodeFromEmailFile();
+    expect(readdirSync(tmpDir).filter((f) => !f.endsWith('.txt'))).toEqual([]);
 
     // Step 3: POST /v1/join/:session/verify
     const verifyRes = await request(`/v1/join/${session}/verify`, {
