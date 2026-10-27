@@ -762,7 +762,7 @@ describe('status for a didit_with_email join', () => {
   it.each<[string, (didit: FakeDidit) => void]>([
     ['an unchanged decision', () => {}],
     ['a failed read', (d) => (d.down = true)],
-  ])('writes nothing to the store on a status poll that finds %s', async (_name, change) => {
+  ])('saves no session and records no event on a status poll that finds %s', async (_name, change) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
     const { request, ctx, didit, session, token } = await joinedApp();
@@ -778,7 +778,7 @@ describe('status for a didit_with_email join', () => {
     for (const write of writes) expect(write).not.toHaveBeenCalled();
   });
 
-  it.each<[string, (didit: FakeSession) => void, object]>([
+  it.each<[string, (session: FakeSession) => void, object]>([
     ['a new status in the same state', (s) => (s.status = 'In Progress'), { state: 'in_progress', attempt: { status: 'In Progress' } }],
     ['its session taken by another agent key', (s) => (s.metadata = { agent_key: 'uhCAkOther' }), { state: 'link_sent', attempt: { gone: true } }],
   ])('saves a status poll that finds %s', async (_name, change, link) => {
