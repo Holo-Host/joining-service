@@ -11,6 +11,7 @@
  * it; any other pending session uses `expirationTtl`.
  */
 
+import { createHash } from 'node:crypto';
 import type { LinkSessionStore, SessionData } from './store.js';
 import { applyUpdate, holdsLink, isExpired, linkHashes, holdsLinkHash, pendingExpiresAt } from './store.js';
 
@@ -27,10 +28,14 @@ interface KvPutOptions {
   expiration?: number;
 }
 
+/** The Workers runtime's default cache (subset of the runtime type). */
+declare const caches: { default: Pick<Cache, 'match' | 'put'> };
+
 const SESSION_PREFIX = 'session:';
 const AGENT_INDEX_PREFIX = 'agent:';
 const LINK_HASH_PREFIX = 'link:';
 const EVENT_PREFIX = 'event:';
+const CLAIM_ORIGIN = 'https://claims.invalid/';
 
 /** KV refuses an expiration less than 60 seconds ahead. */
 const MIN_EXPIRATION_AHEAD_SECONDS = 60;
@@ -198,6 +203,18 @@ export class KvSessionStore implements LinkSessionStore {
       else this.reserved.delete(id);
       if (name) await this.kv.delete(name);
     }
+  }
+
+  /**
+   * In the Workers cache, so a claim spends no KV operation. Cloudflare logs
+   * Cache API requests by URL, so the URL holds a hash of the key, which can
+   * name a session id.
+   */
+  async claim(key: string, ttlMs: number): Promise<boolean> {
+    const url = CLAIM_ORIGIN + createHash('sha256').update(key).digest('hex');
+    if (await caches.default.match(url)) return false;
+    await caches.default.put(url, new Response(null, { headers: { 'Cache-Control': `max-age=${Math.ceil(ttlMs / 1000)}` } }));
+    return true;
   }
 
   private async eventTimes(key: string, after: number, except: string): Promise<number[]> {

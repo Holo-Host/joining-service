@@ -240,23 +240,24 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   }
 
   async refresh(session: SessionData): Promise<void> {
-    let read = false;
+    let changed = false;
     for (const cs of session.challenges) {
       const attempt = cs.link?.attempt;
       if (!attempt || attempt.gone || cs.completed) continue;
-      const interval = READ_INTERVAL_MS[cs.link!.state];
+      const { state } = cs.link!;
+      const interval = READ_INTERVAL_MS[state];
       if (interval === undefined || Date.now() - attempt.read_at < interval) continue;
-      if (!(await this.allow(`didit_read:${session.id}:${cs.challenge.id}`, Date.now(), 1, interval))) continue;
-      read = true;
+      if (!(await this.store.claim(`didit_read:${session.id}:${cs.challenge.id}`, interval))) continue;
       try {
         await this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
       } catch (err) {
         if (!(err instanceof DiditUnavailableError)) throw err;
-        cs.link!.attempt = { ...attempt, read_at: Date.now() };
         console.warn(`[didit_with_email] ${err.message}; serving the stored state`);
+        continue;
       }
+      changed ||= cs.link!.state !== state || cs.link!.attempt!.status !== attempt.status;
     }
-    if (read) await this.save(session);
+    if (changed) await this.save(session);
   }
 
   async continue(session: SessionData, cs: ChallengeState): Promise<ContinueOutcome> {
@@ -498,7 +499,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
    * last `windowMs`, or one within the last `spacingMs`, and answers whether it
    * recorded one.
    */
-  private async allow(key: string, now: number, count: number, windowMs: number, spacingMs = 0): Promise<boolean> {
+  private async allow(key: string, now: number, count: number, windowMs: number, spacingMs: number): Promise<boolean> {
     const wait = await this.store.reserveEvents([key], now, windowMs, ([times]) => {
       const clears = [now];
       if (times.length >= count) clears.push(times[times.length - count] + windowMs);

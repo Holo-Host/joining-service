@@ -11,6 +11,7 @@ export class MemorySessionStore implements LinkSessionStore {
   private agentIndex = new Map<string, string>();
   private linkIndex = new Map<string, string>();
   private events = new Map<string, number[]>();
+  private claims = new Map<string, number>();
   private pendingTtlMs: number;
 
   constructor(pendingTtlSeconds = 86400) {
@@ -99,6 +100,13 @@ export class MemorySessionStore implements LinkSessionStore {
       if (left.length > 0) this.events.set(key, left);
       else this.events.delete(key);
     }
+  }
+
+  async claim(key: string, ttlMs: number): Promise<boolean> {
+    const now = Date.now();
+    if ((this.claims.get(key) ?? 0) > now) return false;
+    this.claims.set(key, now + ttlMs);
+    return true;
   }
 
   private indexLinkHashes(session: SessionData): void {

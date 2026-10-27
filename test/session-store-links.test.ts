@@ -63,6 +63,19 @@ function recorder(target: LinkSessionStore) {
   return { seen, record };
 }
 
+/** The Workers cache as the KV store uses it: a response per URL until its max-age passes. */
+function fakeWorkersCache() {
+  const expires = new Map<string, number>();
+  return {
+    urls: () => [...expires.keys()],
+    match: async (url: string) => ((expires.get(url) ?? 0) > Date.now() ? new Response() : undefined),
+    put: async (url: string, response: Response) => {
+      const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control')!)![1]);
+      expires.set(url, Date.now() + maxAge * 1000);
+    },
+  };
+}
+
 let dir: string;
 
 const factories: Array<[string, Factory]> = [
@@ -98,6 +111,7 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
 
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    vi.stubGlobal('caches', { default: fakeWorkersCache() });
     dir = mkdtempSync(join(tmpdir(), 'session-links-'));
     built = factory();
     store = built.store;
@@ -107,6 +121,7 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
     built.close();
     rmSync(dir, { recursive: true, force: true });
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   describe('expiry', () => {
@@ -252,6 +267,17 @@ describe.each(factories)('%s store, link sessions', (_name, factory) => {
       expect(other.seen).toEqual([[[NOW]]]);
     });
   });
+
+  describe('claims', () => {
+    it('holds a key for its TTL, and claims it again once the TTL passes', async () => {
+      expect(await store.claim('read:a', 15_000)).toBe(true);
+      vi.setSystemTime(NOW + 14_999);
+      expect(await store.claim('read:a', 15_000)).toBe(false);
+      expect(await store.claim('read:b', 15_000)).toBe(true);
+      vi.setSystemTime(NOW + 15_000);
+      expect(await store.claim('read:a', 15_000)).toBe(true);
+    });
+  });
 });
 
 describe.each(factories)('%s store, concurrent writes', (name, factory) => {
@@ -298,6 +324,18 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('claims in the Workers cache, with no KV operation and no key in the URL', async () => {
+    const cache = fakeWorkersCache();
+    vi.stubGlobal('caches', { default: cache });
+    const kv = createMockKV();
+    const store = new KvSessionStore(kv, TTL_SECONDS);
+    expect(await store.claim('didit_read:js_link:ch_link', 15_000)).toBe(true);
+    expect(await store.claim('didit_read:js_link:ch_link', 15_000)).toBe(false);
+    for (const op of [kv.get, kv.put, kv.delete, kv.list]) expect(op).not.toHaveBeenCalled();
+    expect(cache.urls().join()).not.toContain('js_link');
   });
 
   it('drops events past their own TTL, keeps a live link session older than the pending TTL, and removes it and its link tokens once expired', async () => {
