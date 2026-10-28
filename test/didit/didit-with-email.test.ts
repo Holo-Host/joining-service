@@ -738,6 +738,7 @@ describe('status for a didit_with_email join', () => {
     ['Declined', (d) => (d.sessions[0].status = 'Declined'), 300_000, 'declined'],
     ['Expired', (d) => (d.sessions[0].status = 'Expired'), 300_000, 'expired'],
     ['a failed read', (d) => (d.down = true), 15_000, 'in_progress'],
+    ['an unchanged decision', () => {}, 15_000, 'in_progress'],
   ])('reads Didit at most once per interval after %s, however many polls arrive', async (_name, change, interval, state) => {
     vi.useFakeTimers({ toFake: ['Date'] });
     captureLogs();
@@ -756,6 +757,57 @@ describe('status for a didit_with_email join', () => {
     later(1000);
     await Promise.all([status(request, session), status(request, session), status(request, session)]);
     expect(reads()).toBe(start + 1);
+  });
+
+  it('reads the attempt Continue starts after a decline 15 seconds later, not at the declined interval', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    captureLogs();
+    const { request, didit, session, token } = await joinedApp();
+    await pressContinue(request, token);
+    didit.sessions[0].status = 'Declined';
+    later();
+    await status(request, session);
+    later();
+    await status(request, session);
+    expect((await pressContinue(request, token)).headers.get('Location')).toBe(didit.sessions[1].url);
+
+    didit.sessions[1].status = 'Approved';
+    later(15_000);
+    expect((await status(request, session)).status).toBe('ready');
+  });
+
+  it.each<[string, (didit: FakeDidit) => void]>([
+    ['an unchanged decision', () => {}],
+    ['a failed read', (d) => (d.down = true)],
+  ])('saves no session and records no event on a status poll that finds %s', async (_name, change) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    captureLogs();
+    const { request, ctx, didit, session, token } = await joinedApp();
+    await pressContinue(request, token);
+    change(didit);
+    later();
+    const store = ctx.sessionStore as LinkSessionStore;
+    const writes = [vi.spyOn(store, 'update'), vi.spyOn(store, 'reserveEvents')];
+    const reads = didit.calls('decision').length;
+
+    expect(await status(request, session)).toMatchObject({ status: 'pending', challenges: [{ metadata: { state: 'in_progress' } }] });
+    expect(didit.calls('decision')).toHaveLength(reads + 1);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, (session: FakeSession) => void, object]>([
+    ['a new status in the same state', (s) => (s.status = 'In Progress'), { state: 'in_progress', attempt: { status: 'In Progress' } }],
+    ['its session taken by another agent key', (s) => (s.metadata = { agent_key: 'uhCAkOther' }), { state: 'link_sent', attempt: { gone: true } }],
+  ])('saves the session on a status poll that finds %s', async (_name, change, link) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    captureLogs();
+    const { request, ctx, didit, session, token } = await joinedApp();
+    await pressContinue(request, token);
+    change(didit.sessions[0]);
+    later();
+
+    await status(request, session);
+    expect((await ctx.sessionStore.get(session))!.challenges[0].link).toMatchObject(link);
   });
 
   it('makes the join ready on an Approved decision for this join, and registers the email as sent', async () => {

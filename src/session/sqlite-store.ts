@@ -27,6 +27,10 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_events_key_at ON events(key, at);
   CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires);
+  CREATE TABLE IF NOT EXISTS claims (
+    key TEXT PRIMARY KEY,
+    expires INTEGER NOT NULL
+  );
 `;
 
 export class SqliteSessionStore implements LinkSessionStore {
@@ -47,6 +51,8 @@ export class SqliteSessionStore implements LinkSessionStore {
   private stmtEventTimes: Database.Statement;
   private stmtRemoveEvent: Database.Statement;
   private stmtExpireEvents: Database.Statement;
+  private stmtExpireClaims: Database.Statement;
+  private stmtInsertClaim: Database.Statement;
 
   constructor(
     dbPath: string,
@@ -118,6 +124,8 @@ export class SqliteSessionStore implements LinkSessionStore {
     this.stmtRemoveEvent = this.db.prepare(
       'DELETE FROM events WHERE rowid = (SELECT rowid FROM events WHERE key = ? AND at = ? LIMIT 1)',
     );
+    this.stmtExpireClaims = this.db.prepare('DELETE FROM claims WHERE expires <= ?');
+    this.stmtInsertClaim = this.db.prepare('INSERT OR IGNORE INTO claims (key, expires) VALUES (?, ?)');
   }
 
   async create(data: SessionData): Promise<void> {
@@ -214,6 +222,14 @@ export class SqliteSessionStore implements LinkSessionStore {
 
   async removeEvents(keys: string[], at: number): Promise<void> {
     for (const key of keys) this.stmtRemoveEvent.run(key, at);
+  }
+
+  async claim(key: string, ttlMs: number): Promise<boolean> {
+    const now = Date.now();
+    return this.db.transaction(() => {
+      this.stmtExpireClaims.run(now);
+      return this.stmtInsertClaim.run(key, now + ttlMs).changes === 1;
+    })();
   }
 
   cleanup(): void {

@@ -90,10 +90,16 @@ export interface LinkSessionStore extends SessionStore {
   reserveEvents(keys: string[], at: number, ttlMs: number, wait: (earlier: number[][]) => number): Promise<number>;
   /** Gives back one event that this store recorded at `at`, from every key. */
   removeEvents(keys: string[], at: number): Promise<void>;
+  /**
+   * Claims `key` for `ttlMs` unless an earlier claim still holds it, and
+   * answers whether it did. The KV store's claim holds only in the data center
+   * that made it, and two made at the same moment can both succeed.
+   */
+  claim(key: string, ttlMs: number): Promise<boolean>;
 }
 
 export function isLinkSessionStore(store: SessionStore): store is LinkSessionStore {
-  return 'findByLinkHash' in store && 'reserveEvents' in store && 'removeEvents' in store;
+  return 'findByLinkHash' in store && 'reserveEvents' in store && 'removeEvents' in store && 'claim' in store;
 }
 
 /**
