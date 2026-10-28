@@ -206,9 +206,9 @@ export class KvSessionStore implements LinkSessionStore {
   }
 
   /**
-   * In the Workers cache, so a claim spends no KV operation. Cloudflare logs
-   * Cache API requests by URL, so the URL holds a hash of the key, which can
-   * name a session id, a bearer credential.
+   * Kept in the Workers cache, so a claim spends no KV operation. Cloudflare
+   * logs Cache API requests with their URL, and a key can carry a session id,
+   * which is a bearer credential, so the URL holds the key's hash.
    */
   async claim(key: string, ttlMs: number): Promise<boolean> {
     const url = CLAIM_ORIGIN + createHash('sha256').update(key).digest('hex');

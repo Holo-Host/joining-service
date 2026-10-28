@@ -247,7 +247,8 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       const { state } = cs.link!;
       const interval = READ_INTERVAL_MS[state];
       if (interval === undefined || Date.now() - attempt.read_at < interval) continue;
-      if (!(await this.store.claim(`didit_read:${session.id}:${cs.challenge.id}`, interval))) continue;
+      // A claim keeps the interval it was taken with, so each state claims under its own key.
+      if (!(await this.store.claim(`didit_read:${session.id}:${cs.challenge.id}:${state}`, interval))) continue;
       try {
         await this.applyRecorded(session, cs, await this.client.decision(attempt.session_id));
       } catch (err) {

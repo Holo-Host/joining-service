@@ -327,7 +327,7 @@ describe('link session expiry in sqlite cleanup and KV writes', () => {
     vi.unstubAllGlobals();
   });
 
-  it('claims in the Workers cache, with no KV operation and no key in the URL', async () => {
+  it('claims in the Workers cache, with no KV operation and no session id in the URL', async () => {
     const cache = fakeWorkersCache();
     vi.stubGlobal('caches', { default: cache });
     const kv = createMockKV();

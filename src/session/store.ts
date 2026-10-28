@@ -92,8 +92,8 @@ export interface LinkSessionStore extends SessionStore {
   removeEvents(keys: string[], at: number): Promise<void>;
   /**
    * Claims `key` for `ttlMs` unless an earlier claim still holds it, and
-   * answers whether it did. On KV, a claim holds only in the data center
-   * that made it.
+   * answers whether it did. The KV store's claim holds only in the data center
+   * that made it, and two made at the same moment can both succeed.
    */
   claim(key: string, ttlMs: number): Promise<boolean>;
 }
