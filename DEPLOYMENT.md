@@ -708,7 +708,7 @@ zone_name = "example.com"
 - **No filesystem.** `membrane_proof.signing_key_path` is not available; pass the hex seed as the `MEMBRANE_PROOF_SIGNING_KEY` secret instead.
 - **No SQLite.** Use `session.store: "cloudflare-kv"`.
 - **KV consistency.** KV is eventually consistent. Under high concurrent join load, two requests for the same agent key may race and create duplicate pending sessions. This is harmless: one will be overwritten. Ready sessions are not affected.
-- **The Didit read interval needs the Cache API.** Cloudflare documents the Cache API working for a Worker on a custom domain, and having no effect in the dashboard editor preview or behind Cloudflare Access. Where it has no effect, `didit_with_email` status polls read Didit far more often.
+- **The Didit read interval needs the Cache API.** Run `didit_with_email` on a custom domain, where Cloudflare documents the Cache API working. It has no effect in the dashboard editor preview, where status polls read Didit far more often, and it is not available behind Cloudflare Access.
 - **Dynamic registration works out of the box.** Allowed-agent, network, and linker admin routes (`/v1/admin/allowed-agents`, `/v1/admin/networks`, `/v1/admin/linkers`) are all backed by the `SESSIONS` KV binding as soon as their corresponding config secrets (`agent_registration.admin_secret`, `network_registration.admin_secret`, `linker_auth.admin_secret`) are set -- no extra wiring is needed. Dynamic linker registration is Workers-only: Node deployments have no KV backend for it (see below).
 
 ---
