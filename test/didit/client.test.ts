@@ -83,11 +83,11 @@ describe('stateOf', () => {
 });
 
 describe('DiditClient', () => {
-  it('creates a session with exactly the workflow, vendor_data, callback, agent key and email', async () => {
+  it('creates a session with exactly the workflow, vendor_data, callback and agent key', async () => {
     fetchSpy.mockResolvedValueOnce(
       json({ session_id: 's1', session_token: SECRET_TOKEN, url: SECRET_URL, status: 'Not Started', workflow_version: 4 }, 201),
     );
-    const created = await client.createSession({ vendorData: 'v1', callback: 'https://join.example.com/done', agentKey: 'uhCAk1', email: 'Ada@Example.com' });
+    const created = await client.createSession({ vendorData: 'v1', callback: 'https://join.example.com/done', agentKey: 'uhCAk1' });
 
     expect(created).toEqual({ session_id: 's1', url: SECRET_URL, status: 'Not Started' });
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
@@ -99,7 +99,7 @@ describe('DiditClient', () => {
       vendor_data: 'v1',
       callback: 'https://join.example.com/done',
       callback_method: 'both',
-      metadata: { agent_key: 'uhCAk1', email: 'Ada@Example.com' },
+      metadata: { agent_key: 'uhCAk1' },
     });
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
@@ -113,7 +113,7 @@ describe('DiditClient', () => {
         workflow_version: 4,
         vendor_data: 'v1',
         environment: 'sandbox',
-        metadata: { agent_key: 'uhCAk1', email: 'Ada@Example.com' },
+        metadata: { agent_key: 'uhCAk1' },
         id_verifications: [{ first_name: 'Ada', last_name: 'Lovelace' }],
       }),
     );

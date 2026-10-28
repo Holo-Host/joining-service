@@ -368,7 +368,6 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
       vendorData: link.subject_id,
       callback: `${this.baseUrl}/v1/didit/done/${this.doneCredential(link.token_hashes[0])}`,
       agentKey: session.agent_key,
-      email: session.claims.email.trim(),
     });
     const now = Date.now();
     const prev = link.attempt;
