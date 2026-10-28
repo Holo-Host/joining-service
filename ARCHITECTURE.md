@@ -187,7 +187,7 @@ The service emails a link instead of a code. The person opens it on any device a
 
 **Use cases**: Networks that need a verified identity per agent key, without an operator in the loop.
 
-**Flow**: signed `POST /v1/join` with `claims.email` → `status: "pending"` with a `didit_with_email` challenge, and an emailed link → the person opens the link and presses Continue → the service sends the browser to a Didit session → client polls `GET /status`, which reads Didit's decision → an approval for this agent key returns `status: "ready"`, and, with `hc_auth` configured, the agent key is registered with hc-auth as `email_code` registers it, with the email in the metadata when `forward_claims` names it.
+**Flow**: signed `POST /v1/join` with `claims.email` → `status: "pending"` with a `didit_with_email` challenge, and an emailed link → the person opens the link, checks that the agent key's identicon matches the app's, and presses Continue → the service sends the browser to a Didit session → client polls `GET /status`, which reads Didit's decision → an approval for this agent key returns `status: "ready"`, and, with `hc_auth` configured, the agent key is registered with hc-auth as `email_code` registers it, with the email in the metadata when `forward_claims` names it.
 
 ---
 

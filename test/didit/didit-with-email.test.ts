@@ -6,6 +6,7 @@ import { FileTransport } from '../../src/email/file.js';
 import { resetRateLimitState } from '../../src/auth-methods/delegated-verification.js';
 import { DiditWithEmailAuthMethod, NO_ATTEMPTS_LEFT } from '../../src/auth-methods/didit-with-email.js';
 import { TEXT, linkPages } from '../../src/auth-methods/didit-with-email-pages.js';
+import { identiconSvg } from '../../src/auth-methods/didit-with-email-identicon.js';
 import { renderLinkEmail } from '../../src/auth-methods/didit-with-email-mail.js';
 import { createTestApp, fakeDnaHash, smallOrderSigned } from '../helpers.js';
 import { decodeHashFromBase64, encodeHashToBase64 } from '../../src/utils.js';
@@ -120,7 +121,7 @@ describe('didit_with_email join', () => {
   it.each([
     ['happ.name', {}, 'Test App'],
     ['network_name', { network_name: 'Test Network' }, 'Test Network'],
-  ] as [string, Partial<ServiceConfig>, string][])('emails one link under base_url to the trimmed address as happ.name, naming the network by %s, the full agent key and the expiry, and calls no Didit', async (_by, overrides, network) => {
+  ] as [string, Partial<ServiceConfig>, string][])('emails one link under base_url to the trimmed address as happ.name, naming the network by %s and no agent key, and calls no Didit', async (_by, overrides, network) => {
     const { request, emails, didit } = await diditApp(overrides);
     const agent = await signingAgent();
     const { join } = await joined(request, emails, agent, `  ${EMAIL}\t`);
@@ -128,18 +129,16 @@ describe('didit_with_email join', () => {
     expect(emails).toHaveLength(1);
     const [email] = emails;
     expect(email.to).toBe(EMAIL);
+    const link = `${BASE_URL}/v1/didit/${linkToken(email)}`;
     expect(email.subject).toBe(`Verify your identity to join ${network}`);
-    expect(email.body).toContain(`${BASE_URL}/v1/didit/${linkToken(email)}`);
-    expect(email.body).toContain(`Request to verify your identity to join ${network} with this email address.`);
-    expect(email.body).toContain(
-      `For the device with this agent key:\n${agent.agentKey}\nContinue only if that is the key shown in your app.`,
-    );
-    expect(email.body).toMatch(/It works until \d{1,2} [A-Z][a-z]+ \d{4}, \d{2}:\d{2} UTC\./);
-    expect(email.body).not.toMatch(/\b\d{6}\b/);
+    expect(email.body).toBe(`Verify your identity to start using ${network}\n\n${link}`);
     expect(email.senderName).toBe('Test App');
     expect(email.html).toContain('letter-spacing:.02em">Test App</p>');
-    expect(email.html).toContain(`user-select:all">${agent.agentKey}</p>`);
-    expect(email.html).toContain(`>${BASE_URL}/v1/didit/${linkToken(email)}</a>`);
+    expect(email.html).toContain(`>Verify your identity to start using ${network}</h1>`);
+    expect(email.html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${link}"`]);
+    expect(email.html).toContain('>Verify your Identity</a>');
+    expect(email.html).not.toContain(agent.agentKey);
+    expect(email.html).not.toContain('UTC');
     expect(didit.requests).toHaveLength(0);
 
     expect(join.status).toBe('pending');
@@ -147,7 +146,7 @@ describe('didit_with_email join', () => {
 
     const page = await (await request(`/v1/didit/${linkToken(email)}`)).text();
     expect(page).toContain('<p class="app">Test App</p>');
-    expect(page).toContain(`<p class="lead">Request to verify your identity to join ${network} with this email address.</p>`);
+    expect(page).toContain(`<h1>Verify your identity to start using ${network}</h1>`);
   });
 
   it('fills every placeholder of a configured subject and template', async () => {
@@ -401,7 +400,7 @@ describe('didit_with_email join', () => {
 });
 
 describe('the didit_with_email email', () => {
-  it('escapes every value and the template, sets the first paragraph bold and a last one without the button small, wraps long words, and makes a line holding only the link a button over the URL and one holding only the key a selectable box', () => {
+  it('escapes every value and the template, sets the first paragraph as the heading and a last one without the button small, wraps long words, and makes a line holding only the link a button and one holding only the key a selectable box', () => {
     const link = 'https://join.example.com/v1/didit/a&b';
     const href = 'https://join.example.com/v1/didit/a&#38;b';
     const { subject, text, html } = renderLinkEmail(
@@ -416,12 +415,10 @@ describe('the didit_with_email email', () => {
     expect(text).toBe(`<b>Hi</b> <img src=x>, key "key"\n${link}\n\n"key"\n\nUntil 1 May. See ${link}`);
     expect(html).not.toMatch(/<(i|b|img|script)\b/);
     expect(html).toContain('>Ada &#38; Co</p>');
-    expect(html).toContain('>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62;</h1>');
-    expect(html).toContain('font-weight:600;color:#ffffff">&#60;b&#62;Hi&#60;/b&#62; &#60;img src=x&#62;, key &#34;key&#34;</p>');
+    expect(html).toContain('<title>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62;</title>');
+    expect(html).toContain('word-break:break-word">&#60;b&#62;Hi&#60;/b&#62; &#60;img src=x&#62;, key &#34;key&#34;</h1>');
     expect(html).toContain('user-select:all">&#34;key&#34;</p>');
-    expect(html.match(/>Verify your identity<\/a>/g)).toHaveLength(1);
-    expect(html.match(new RegExp(`<a href="${href}"`, 'g'))).toHaveLength(2);
-    expect(html).toContain(`>${href}</a></p>`);
+    expect(html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${href}"`]);
     expect(html).toContain(`font-size:13px;line-height:20px;color:#8e8e93">Until 1 May. See ${href}</p>`);
 
     const endsOnButton = renderLinkEmail('A', { email_template: 'Hi\n\nOpen it:\n{{link}}' }, { network: 'N', link, expires_at: '1 May', agent_key: 'k' });
@@ -465,7 +462,7 @@ describe('didit_with_email email limits', () => {
 });
 
 describe('GET /v1/didit/{token}', () => {
-  it('shows the request first, the full key with a Copy button that only the script shows, Continue and the caution, and changes and calls nothing', async () => {
+  it("shows the network, the agent key's identicon to match in the app, the warning and the button that posts as Continue did, and changes and calls nothing", async () => {
     const { request, ctx, didit, agent, session, token } = await joinedApp();
     const before = await ctx.sessionStore.get(session);
 
@@ -473,16 +470,14 @@ describe('GET /v1/didit/{token}', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain(
-      '<h1>Identity verification</h1>\n<p class="lead">Request to verify your identity to join Test App with this email address.</p>',
+      `<p class="app">Test App</p>\n<h1>Verify your identity to start using Test App</h1>\n<div class="match">${identiconSvg(agent.agentKey)}<p>Ensure this matches in the Test App App</p></div>\n` +
+        `<p>Do not proceed if the agent icon doesn't match.</p>\n<form method="post"><button type="submit">Yes-- Image matches (OK)</button></form>\n</main>`,
     );
-    expect(html).toContain(`<code id="key">${agent.agentKey}</code><button type="button" id="copy" aria-live="polite" hidden>Copy</button>`);
-    expect(html).toContain('<p>Continue only if that is the key shown in your app.</p>');
-    expect(html).toContain('<form method="post"><button type="submit">Continue</button></form>');
-    expect(html).toContain('<p class="caution">If you did not start this, close this page and do not continue.</p>');
+    expect(html).not.toContain(agent.agentKey);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
     expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
     expect(res.headers.get('X-Robots-Tag')).toBe('noindex');
-    expect(res.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+    expect(res.headers.get('Content-Security-Policy')).toBe("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
 
     expect(didit.requests).toHaveLength(0);
     expect(await ctx.sessionStore.get(session)).toEqual(before);
@@ -502,33 +497,54 @@ describe('GET /v1/didit/{token}', () => {
 });
 
 describe('link pages', () => {
-  const landing = { network: 'Test App', agentKey: `uhCAk${'a'.repeat(48)}` };
+  const landing = { network: 'Ada & <Net>', agentKey: `uhCAk${'a'.repeat(48)}` };
+  const states: DiditWithEmailState[] = ['link_sent', 'in_progress', 'in_review', 'approved', 'declined', 'expired'];
 
-  it('shows each page as one card under happ.name and the heading, with one CSP and no remote resource, Copy on every landing page and Continue only where it can continue', async () => {
+  it('shows each page as one card under happ.name, with one CSP and no script or remote resource, and the identicon and button only where it can continue', async () => {
     const pages = linkPages('Ada & <Co>');
-    const states: DiditWithEmailState[] = ['link_sent', 'in_progress', 'in_review', 'approved', 'declined', 'expired'];
     const shown = [
-      ...states.map((state) => [pages.landing({ ...landing, state }), state === 'in_review' || state === 'approved' ? 1 : 2, 1] as const),
-      ...states.map((state) => [pages.done(state), 0, 0] as const),
-      ...Object.values(TEXT).map((text) => [pages.message(text, 503), 0, 0] as const),
+      ...states.map((state) => [pages.landing({ ...landing, state }), state !== 'in_review' && state !== 'approved'] as const),
+      ...states.map((state) => [pages.done(state), false] as const),
+      ...Object.values(TEXT).map((text) => [pages.message(text, 503), false] as const),
     ];
-    const csp = pages.landing({ ...landing, state: 'link_sent' }).headers.get('Content-Security-Policy');
-    for (const [res, buttons, scripts] of shown) {
+    for (const [res, continues] of shown) {
       const html = await res.text();
-      expect(html).toContain('<p class="app">Ada &#38; &#60;Co&#62;</p>\n<h1>Identity verification</h1>\n<p class="lead">');
-      expect(html.match(/<button/g) ?? []).toHaveLength(buttons);
-      expect(html.match(/<script>/g) ?? []).toHaveLength(scripts);
-      expect(html.replace(/<script>.*?<\/script>/s, '')).not.toMatch(/<script|https?:|url\(|src=|href=/i);
-      expect(res.headers.get('Content-Security-Policy')).toBe(csp);
+      expect(html).toContain('<p class="app">Ada &#38; &#60;Co&#62;</p>\n<h1>');
+      expect(html).toContain(continues ? '<h1>Verify your identity to start using Ada &#38; &#60;Net&#62;</h1>' : '<h1>Identity verification</h1>\n<p class="lead">');
+      expect(html).toContain(continues ? 'Ensure this matches in the Ada &#38; &#60;Co&#62; App' : '</p>\n</main>');
+      expect((html.match(/<svg class="identicon"/g) ?? []).length).toBe(continues ? 1 : 0);
+      expect((html.match(/<button/g) ?? []).length).toBe(continues ? 1 : 0);
+      expect(html).not.toMatch(/<script|https?:|url\(|src=|href=/i);
+      expect(html).not.toContain(landing.agentKey);
+      expect(res.headers.get('Content-Security-Policy')).toBe("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
     }
   });
 
-  it('allows through the CSP only the hash of the inline script', async () => {
-    const res = linkPages('Test App').landing({ ...landing, state: 'link_sent' });
-    const [script] = (await res.text()).match(/(?<=<script>).*?(?=<\/script>)/s)!;
-    const hash = createHash('sha256').update(script).digest('base64');
-    expect(res.headers.get('Content-Security-Policy')).toBe(
-      `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${hash}'; frame-ancestors 'none'`,
+  it('says a last attempt did not pass above the identicon, and sends a reviewed or approved join back to the app', async () => {
+    const pages = linkPages('Test App');
+    for (const state of ['declined', 'expired'] as const) {
+      expect(await pages.landing({ ...landing, state }).text()).toContain(`<p class="lead">${TEXT.notPassedLanding}</p>\n<div class="match">`);
+    }
+    expect(await pages.landing({ ...landing, state: 'approved' }).text()).toContain(`<p class="lead">${TEXT.approvedLanding}</p>`);
+    expect(await pages.landing({ ...landing, state: 'in_review' }).text()).toContain(`<p class="lead">${TEXT.inReview}</p>`);
+  });
+});
+
+describe('the identicon on the link page', () => {
+  it("draws the discs the Unyt app's identicon draws for the key", () => {
+    const discs = [
+      [9.24790944904089, 37.868408896028996, 106.52225106954575, 'hsl(56, 72.20924565568566%, 40.467375435400754%)'],
+      [94.68468189239502, 110.38305530324578, 53.64965591579676, 'hsl(319, 41.31852357648313%, 34.11787413060665%)'],
+      [19.830651562660933, 53.567385859787464, 9.0443872846663, 'hsl(156, 69.07664937898517%, 30.239943496417254%)'],
+      [3.9133945293724537, 6.551098600029945, 11.693483542185277, 'hsl(193, 88.60323226079345%, 54.14244739804417%)'],
+      [102.38012155517936, 44.20245409011841, 8.122336333617568, 'hsl(224, 89.8890388943255%, 25.522313243709505%)'],
+      [41.89702508971095, 1.3998671248555183, 2.8356457594782114, 'hsl(281, 83.75520325265825%, 71.29611072596163%)'],
+    ];
+    expect(identiconSvg('uhCAk3fQWv1u8Jr5pT2yZbN0cL4mXhE7gD9sKoRaVtYiPq9xQ2ab')).toBe(
+      '<svg class="identicon" viewBox="0 0 120 120" role="img" aria-label="Agent icon">' +
+        '<rect x="0" y="0" width="120" height="120" fill="hsl(0, 0%, 24.16688813827932%)"/>' +
+        discs.map(([cx, cy, r, fill]) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/>`).join('') +
+        '</svg>',
     );
   });
 });
@@ -727,7 +743,7 @@ describe('POST /v1/didit/{token}', () => {
     expect((await status(request, session)).challenges[0].metadata.state).toBe('declined');
 
     const page = await (await request(`/v1/didit/${token}`)).text();
-    expect(page).toContain('Your last verification did not pass. Continue to start a new attempt.');
+    expect(page).toContain('Your last verification did not pass. Check the icon below to start a new attempt.');
     expect((await pressContinue(request, token)).headers.get('Location')).toBe(didit.sessions[1].url);
 
     captureLogs();
@@ -1040,7 +1056,7 @@ describe('the ready path of a didit_with_email join', () => {
     const { session } = await join.json();
 
     expect(emails[0].subject).toBe('Verify your identity to join Acme');
-    expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('Request to verify your identity to join Acme');
+    expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('<h1>Verify your identity to start using Acme</h1>');
     const resume = async (extra: Record<string, unknown>) =>
       postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), ...extra });
     expect((await (await resume({ network: 'acme-net' })).json()).session).toBe(session);
@@ -1073,7 +1089,7 @@ describe('GET /v1/didit/done/{credential}', () => {
     ['In Review', 'pending', 'Your verification is in review. After the review, the app continues by itself.'],
     ['Declined', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
     ['Expired', 'pending', 'Your verification did not pass. To try again, open the link in your email again.'],
-    ['forgotten', 'pending', 'We could not find your verification. To start again, open the link in your email and press Continue.'],
+    ['forgotten', 'pending', 'We could not find your verification. To start again, open the link in your email.'],
     ['Approved', 'pending', VERIFIED],
     ['Approved', 'ready', VERIFIED],
     ['In Progress', 'rejected', NO_ATTEMPTS_LEFT],

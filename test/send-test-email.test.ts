@@ -45,7 +45,7 @@ describe('npm run send-test-email', () => {
     const [html, text] = files.map((f) => readFileSync(join(outbox, f), 'utf-8'));
     const link = new RegExp(`${BASE_URL}/v1/didit/[A-Za-z0-9_-]{43}`).exec(text)![0];
     expect(html).toContain(`<a href="${link}"`);
-    expect(html).toContain('>Verify your identity</a>');
+    expect(html).toContain('>Verify your Identity</a>');
   }, 30_000);
 
   it('exits non-zero on a config that is not JSON, without quoting it', async () => {
