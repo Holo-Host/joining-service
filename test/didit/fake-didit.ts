@@ -9,7 +9,7 @@ export interface FakeSession {
   vendor_data: string;
   workflow_id: string;
   environment: string;
-  metadata: { agent_key?: string } | null;
+  metadata: { agent_key?: string; email?: string } | null;
   url: string;
   session_token: string;
   created: number;

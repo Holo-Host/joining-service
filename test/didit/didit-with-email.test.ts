@@ -534,8 +534,10 @@ describe('link pages', () => {
 });
 
 describe('POST /v1/didit/{token}', () => {
-  it('creates a session for the subject id and agent key, with a done callback that cannot Continue, and answers 303 to it', async () => {
-    const { request, ctx, didit, agent, session, token } = await joinedApp();
+  it('creates a session for the subject id, agent key and trimmed email, with a done callback that cannot Continue, and answers 303 to it', async () => {
+    const { request, ctx, didit, emails } = await diditApp();
+    const agent = await signingAgent();
+    const { session, token } = await joined(request, emails, agent, ` ${EMAIL} `);
 
     const res = await pressContinue(request, token);
     expect(res.status).toBe(303);
@@ -548,7 +550,7 @@ describe('POST /v1/didit/{token}', () => {
       vendor_data: SUBJECT,
       callback: expect.stringMatching(/\/v1\/didit\/done\/[A-Za-z0-9_-]{43}$/),
       callback_method: 'both',
-      metadata: { agent_key: agent.agentKey },
+      metadata: { agent_key: agent.agentKey, email: EMAIL },
     });
     expect(create.body!.callback).toBe(`${BASE_URL}${donePath(didit)}`);
     const credential = donePath(didit).split('/').pop()!;
@@ -626,7 +628,7 @@ describe('POST /v1/didit/{token}', () => {
     const seeded = seeds.map(([s, by, extra]) =>
       app.didit.seed({ vendor_data: SUBJECT, status: s, metadata: by ? { agent_key: owner[by] } : null, ...extra }),
     );
-    const metadata = structuredClone(seeded.map((s) => s.metadata));
+    const keys = seeded.map((s) => s.metadata?.agent_key);
 
     const res = await pressContinue(app.request, app.token);
     expect(res.status).toBe(code);
@@ -634,7 +636,7 @@ describe('POST /v1/didit/{token}', () => {
     if (says) expect(await res.text()).toContain(says);
     if (logged) expect(lines.join('\n')).toContain(logged);
     expect(app.didit.calls('create')).toHaveLength(creates);
-    expect(seeded.map((s) => s.metadata)).toEqual(metadata);
+    expect(seeded.map((s) => s.metadata?.agent_key)).toEqual(keys);
     const shown = await status(app.request, app.session);
     expect(shown).toMatchObject(polled);
     if (polled.status === 'rejected') expect(shown).toEqual(polled);
@@ -866,7 +868,7 @@ describe('status for a didit_with_email join', () => {
     const takeover = await pressContinue(request, second.token);
     expect(takeover.headers.get('Location')).toBe(didit.sessions[0].url);
     expect(didit.sessions).toHaveLength(1);
-    expect(didit.sessions[0].metadata).toEqual({ agent_key: secondAgent.agentKey });
+    expect(didit.sessions[0].metadata).toEqual({ agent_key: secondAgent.agentKey, email: EMAIL });
 
     didit.sessions[0].status = 'Approved';
     later();

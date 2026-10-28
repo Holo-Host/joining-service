@@ -140,6 +140,7 @@ export class DiditClient {
     vendorData: string;
     callback: string;
     agentKey: string;
+    email: string;
   }): Promise<CreatedSession> {
     const res = await this.call('create', '/v3/session/', {
       method: 'POST',
@@ -148,7 +149,7 @@ export class DiditClient {
         vendor_data: request.vendorData,
         callback: request.callback,
         callback_method: 'both',
-        metadata: { agent_key: request.agentKey },
+        metadata: { agent_key: request.agentKey, email: request.email },
       }),
     });
     if (!res.ok) throw this.refused('create', res.status);
