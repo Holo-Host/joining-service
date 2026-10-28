@@ -120,6 +120,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
     "description": "Decentralized microblogging on Holochain",
     "icon_url": "https://app.example.com/icon.png"
   },
+  "network_name": "Mewsfeed Mainnet",
   "http_gateways": [
     {
       "url": "https://gw1.example.com",
@@ -135,6 +136,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
   "happ_bundle_url": "https://app.example.com/mewsfeed.happ",
   "roles": {
     "main": {
+      "dna_hash": "uhC0k...",
       "dna_modifiers": {
         "network_seed": "mewsfeed-mainnet-2026",
         "properties": {}
@@ -150,6 +152,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 | `happ.name` | string | yes | Human-readable name |
 | `happ.description` | string | no | Short description |
 | `happ.icon_url` | string (URL) | no | Icon for display in extension popup |
+| `network_name` | string | no | Display name of the network. `happ.name` names the app. Absent when config does not set it. |
 | `http_gateways` | array | no | Available hc-http-gw instances for read-only access before joining |
 | `http_gateways[].url` | string (URL) | yes | Gateway base URL |
 | `http_gateways[].dna_hashes` | string[] | yes | Base64-encoded DNA hashes served by this gateway |
@@ -160,7 +163,8 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 | `linker_info.selection_mode` | string | if linker_info present | `"assigned"` (server picks linker) or `"client_choice"` (client picks from list) |
 | `linker_info.region_hints` | string[] | no | Available regions for latency optimization |
 | `happ_bundle_url` | string (URL) | no | URL to download the .happ bundle. May be absent if gated behind auth. |
-| `roles` | object | no | Per-role DNA modifiers. Role name → `{ dna_modifiers? }`. Present whenever the service config declares `roles`. |
+| `roles` | object | no | Per-role DNA data. Role name → `{ dna_hash?, dna_modifiers? }`. Present whenever the service config declares `roles`. |
+| `roles[role_name].dna_hash` | string | no | Base64 DnaHash (`uhC0k...`) for this role. Absent when the role declares no `dna_hash`. |
 | `roles[role_name].dna_modifiers` | object | no | DNA modifiers for this role (network_seed, properties, etc.) |
 | `network_config` | object | no | Network service URLs. Only present when `network.reveal_in_info` is enabled in config (default: off). Exposing these URLs publicly may increase DDoS surface area for the listed services. |
 | `network_config.auth_server_url` | string (URL) | no | HC-Auth server URL (derived from `hc_auth.url` config) |
@@ -171,6 +175,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
 
 - If `:happ_id` equals the service's own statically configured happ id (`happ.id` in config), the response is identical to the bare `GET /v1/info` above -- it's an alias, not a second network.
 - If `:happ_id` names a network registered via `POST /v1/admin/networks` (Section 3.11), the response uses that network's own data: `happ.name` falls back to `happ_id` when the registration didn't set `happ.name`; `happ.description`/`happ.icon_url` come from the registration's `happ` object (absent if unset); `happ_bundle_url` comes only from the registration's `happ.happ_bundle_url` (no fallback to the service's own `happ_bundle_url`); `roles` reflects that network's own roles. `http_gateways`, `auth_methods`, `linker_info`, and `network_config` are service-wide and identical to the bare endpoint's, since they don't vary per network.
+- A registered network's response never carries `network_name`. Its `happ.name` names the network.
 - **Gated networks omit `roles`**: if the network has a non-empty `allowed_agents` (Section 3.11), `roles` is absent from this response, even though `happ` and the service-level fields are still served. An `allowed_agents` gate restricts *joining*, not visibility of an unauthenticated endpoint -- exposing the role modifiers (e.g. `network_seed`) to anyone who knows or guesses the `happ_id` would leak them regardless of the gate. Agents that clear the gate still receive `roles`/membrane proofs normally at `GET /v1/join/{session}/provision` (Section 3.5).
 - If `:happ_id` is neither the static happ id nor a registered network, the response is `404 unknown_network`.
 
@@ -193,6 +198,7 @@ Returns hApp metadata, available read-only gateways, supported auth methods, and
   "happ_bundle_url": "https://releases.acme.example/acme.happ",
   "roles": {
     "main": {
+      "dna_hash": "uhC0k...",
       "dna_modifiers": {
         "network_seed": "acme-mainnet-2026",
         "properties": {}
@@ -1309,7 +1315,7 @@ Config:
 | `email_subject` | string | no | Takes the same placeholders as `email_template` but `{{link}}`. Default: `Verify your identity to join {{network}}` |
 | `email_template` | string | no | Body, sent as plain text and as HTML. The HTML escapes it and splits it into paragraphs on blank lines. It sets the first paragraph in bold and, when there are several, the last in small muted text unless it holds the button. A line that holds only `{{link}}` becomes a "Verify your identity" button over the plain URL, and a line that holds only `{{agent_key}}` a box that selects the whole key. Placeholders: `{{network}}`, `{{link}}`, `{{expires_at}}` (as `28 October 2026, 14:02 UTC`) and `{{agent_key}}` (the full joining key). Must contain `{{link}}` |
 
-The email's sender name is `happ.name`. `resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, beside `email_code`, or with a `happ.name` that holds CR, LF, `<`, `>`, a comma, `"` or `\`. A `didit` section without the method changes nothing.
+`happ.name` is the email's sender name and the header of the email and the link pages. `{{network}}` in the email and on the link pages is `network_name` for the static network, else `happ.name`. For a registered network it is that network's `happ.name`, else its `happ_id`. `resolveConfig` refuses `didit_with_email` without a valid `didit` section, without an `email` transport, without an `https` `base_url`, beside `email_code`, or with a `happ.name` that holds CR, LF, `<`, `>`, a comma, `"` or `\`. A `didit` section without the method changes nothing.
 
 **What reaches hc-auth.** The join reaches hc-auth exactly as an `email_code` join does. Once it is ready, the service registers the agent key, and `hc_auth.forward_claims: ["email"]` puts `claims.email`, as sent, into the registration metadata. With `hc_auth_approval` among the methods, hc-auth authorizes the key and the service registers nothing. Nothing from Didit reaches hc-auth.
 
@@ -1618,6 +1624,8 @@ interface JoiningServiceInfo {
     description?: string;
     icon_url?: string;
   };
+  /** Display name of the network. `happ.name` names the app. Only the static network carries it. */
+  network_name?: string;
   http_gateways?: HttpGateway[];
   auth_methods: AuthMethodEntry[];
   /** Absent when the service does not manage linker relay URLs. */
@@ -1628,7 +1636,7 @@ interface JoiningServiceInfo {
   happ_bundle_url?: string;
   /** Network service URLs. Only present when reveal_in_info is enabled in config. */
   network_config?: NetworkConfig;
-  roles?: Record<string, { dna_modifiers?: DnaModifiers }>;
+  roles?: Record<string, { dna_hash?: string; dna_modifiers?: DnaModifiers }>;
 }
 
 interface HttpGateway {

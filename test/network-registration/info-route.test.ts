@@ -39,7 +39,7 @@ describe('GET /v1/info/:happ_id', () => {
     // No fallback to the service's own happ_bundle_url.
     expect(body.happ_bundle_url).toBeUndefined();
     expect(body.roles).toEqual({
-      main: { dna_modifiers: { network_seed: 'acme-seed' } },
+      main: { dna_hash: fakeDnaHash(1), dna_modifiers: { network_seed: 'acme-seed' } },
     });
   });
 
@@ -80,6 +80,23 @@ describe('GET /v1/info/:happ_id', () => {
     // createTestApp's default happ.id is 'test-app'.
     const named = await (await request('/v1/info/test-app')).json();
     expect(named).toEqual(bare);
+    expect(bare).not.toHaveProperty('network_name');
+  });
+
+  it('serves the configured network_name for the static network only', async () => {
+    const { request } = await createTestApp({
+      network_registration: { admin_secret: ADMIN_SECRET },
+      network_name: 'Test Network',
+    });
+    await registerNetwork(request, {
+      happ_id: 'named-net',
+      happ: { name: 'Named Net' },
+      roles: { main: { dna_hash: fakeDnaHash(7) } },
+    });
+
+    expect((await (await request('/v1/info')).json()).network_name).toBe('Test Network');
+    expect((await (await request('/v1/info/test-app')).json()).network_name).toBe('Test Network');
+    expect(await (await request('/v1/info/named-net')).json()).not.toHaveProperty('network_name');
   });
 
   it('404s unknown_network for an unregistered id', async () => {
@@ -135,7 +152,7 @@ describe('GET /v1/info/:happ_id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.roles).toEqual({
-      main: { dna_modifiers: { network_seed: 'public-seed' } },
+      main: { dna_hash: fakeDnaHash(6), dna_modifiers: { network_seed: 'public-seed' } },
     });
   });
 

@@ -13,6 +13,8 @@ export interface JoiningServiceInfo {
     description?: string;
     icon_url?: string;
   };
+  /** Display name of the network. `happ.name` names the app. Only the static network carries it. */
+  network_name?: string;
   http_gateways?: HttpGateway[];
   auth_methods: AuthMethodEntry[];
   /** Absent when the service does not manage linker relay URLs. */
@@ -23,7 +25,7 @@ export interface JoiningServiceInfo {
   happ_bundle_url?: string;
   /** Network service URLs. Only present when reveal_in_info is enabled in config. */
   network_config?: NetworkConfig;
-  roles?: Record<string, { dna_modifiers?: DnaModifiers }>;
+  roles?: Record<string, { dna_hash?: string; dna_modifiers?: DnaModifiers }>;
 }
 
 export interface HttpGateway {

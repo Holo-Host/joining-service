@@ -72,9 +72,9 @@ describe('buildAuthPlugins', () => {
     }
   });
 
-  it('builds didit_with_email from config, so its links start with base_url and its email names happ.name', async () => {
+  it('builds didit_with_email from config, so its links start with base_url and its email names network_name as happ.name', async () => {
     const sent = captureEmails();
-    const config = resolveConfig({ ...DIDIT_SERVICE, happ: { id: 'test-app', name: 'Acme' } });
+    const config = resolveConfig({ ...DIDIT_SERVICE, happ: { id: 'test-app', name: 'Acme' }, network_name: 'Acme Mainnet' });
     const plugin = buildAuthPlugins(config, {
       emailTransport: new FileTransport('/tmp/test-emails'),
       sessionStore: new MemorySessionStore(),
@@ -82,7 +82,8 @@ describe('buildAuthPlugins', () => {
     const { agentKey } = await signingAgent();
     const [challenge] = await plugin.createChallenges(agentKey, { email: 'ada@example.com' }, config);
     await plugin.sendFirst(agentKey, 'ada@example.com', { expires_at: Date.now(), ...takeLink(challenge) });
-    expect(sent[0].subject).toBe('Verify your identity to join Acme');
+    expect(sent[0].subject).toBe('Verify your identity to join Acme Mainnet');
+    expect(sent[0].senderName).toBe('Acme');
     expect(sent[0].body).toContain(`${BASE_URL}/v1/didit/`);
     vi.restoreAllMocks();
   });

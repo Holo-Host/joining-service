@@ -28,6 +28,7 @@ export interface ServiceConfig {
     icon_url?: string;
     happ_bundle_url?: string;
   };
+  network_name?: string;
   auth_methods: AuthMethodEntry[];
   linker_info?: {
     selection_mode: 'assigned' | 'client_choice';
@@ -115,6 +116,9 @@ export function resolveConfig(partial: Partial<ServiceConfig>): ServiceConfig {
 
   if (!partial.happ?.id || !partial.happ?.name) {
     throw new Error('config: happ.id and happ.name are required');
+  }
+  if (partial.network_name !== undefined && (typeof partial.network_name !== 'string' || partial.network_name === '')) {
+    throw new Error('config: network_name must be a non-empty string');
   }
   if (!partial.auth_methods?.length) {
     throw new Error('config: at least one auth_method is required');

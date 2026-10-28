@@ -109,3 +109,15 @@ describe('roles config', () => {
     );
   });
 });
+
+describe('network_name config', () => {
+  it('accepts a non-empty string', () => {
+    expect(resolveConfig({ ...BASE, network_name: 'HoloFuel' }).network_name).toBe('HoloFuel');
+  });
+
+  it.each([[''], [42], [null]])('rejects %j', (network_name) => {
+    expect(() => resolveConfig({ ...BASE, network_name: network_name as never })).toThrow(
+      /network_name must be a non-empty string/,
+    );
+  });
+});
