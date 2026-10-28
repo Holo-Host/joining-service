@@ -414,7 +414,7 @@ The `/status` endpoint returns the current session state, including status and o
 | `reason` | string | if rejected | Human-readable rejection reason (e.g. `"agent blocked by administrator"`) |
 | `poll_interval_ms` | number | if pending | Suggested polling interval in milliseconds |
 
-For an open `didit_with_email` challenge with a Didit session, status first reads Didit's decision, at most once per read interval (Section 8). An approved decision for this join completes the challenge and makes the session ready. While Didit is unreachable, the stored state comes back and the next poll tries again.
+For an open `didit_with_email` challenge with a Didit session, status first reads Didit's decision, at most once per read interval (Section 8). An approved decision for this join completes the challenge and makes the session ready. While Didit is unreachable, the stored state comes back.
 
 Each request to hc-auth or a linker times out after 5 seconds. When a required hc-auth or linker step fails, the session stays `pending` with its completed challenges, and the next poll retries.
 
