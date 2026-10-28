@@ -83,6 +83,7 @@ export interface DiditWithEmailDeps {
   transport: EmailTransport;
   baseUrl: string;
   happName: string;
+  networkName?: string;
 }
 
 /** A time as `28 October 2026, 14:02 UTC`. */
@@ -153,6 +154,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
   private readonly config: ResolvedDiditConfig;
   private readonly baseUrl: string;
   readonly happName: string;
+  private readonly networkName: string;
 
   constructor(deps: DiditWithEmailDeps) {
     this.client = deps.client;
@@ -161,6 +163,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     this.config = deps.client.config;
     this.baseUrl = deps.baseUrl.replace(/\/+$/, '');
     this.happName = deps.happName;
+    this.networkName = deps.networkName ?? deps.happName;
   }
 
   async createChallenges(
@@ -183,7 +186,7 @@ export class DiditWithEmailAuthMethod implements AuthMethodPlugin {
     const expiresAt = now + this.config.link_ttl_seconds * 1000;
     const named = {
       subject_id: subjectId(address, this.config.subject_key),
-      network_name: network ? (network.happ?.name ?? network.happ_id) : this.happName,
+      network_name: network ? (network.happ?.name ?? network.happ_id) : this.networkName,
     };
     const link: LinkChallengeData = {
       state: 'link_sent',

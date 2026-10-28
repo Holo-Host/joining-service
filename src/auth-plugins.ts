@@ -123,6 +123,7 @@ export function buildAuthPlugins(
             transport: emailTransport,
             baseUrl: config.base_url!,
             happName: config.happ.name,
+            networkName: config.network_name,
           }),
         );
         break;

@@ -350,7 +350,7 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `happ.description` | string | — | Optional description |
 | `happ.icon_url` | string | — | Icon URL for display |
 | `happ.happ_bundle_url` | string | — | URL clients use to fetch the .happ bundle |
-| `network_name` | string | — | Display name of the network, served in `/v1/info`. `happ.name` names the app. Must not be empty. |
+| `network_name` | string | — | Display name of the network, served in `/v1/info` and filled into the `didit_with_email` `{{network}}`. `happ.name` names the app. Must not be empty. |
 | `auth_methods` | AuthMethodEntry[] | required | e.g. `["open"]`, `["email_code"]`, `["invite_code"]`, `[{"any_of": ["invite_code", "agent_allow_list"]}]` |
 | `linker_registrations` | LinkerRegistration[] | — | Top-level config key (not in ServiceConfig). Array of `{linker_url: {url}, admin?: {url, secret}}` objects |
 | `http_gateways` | HttpGateway[] | — | Top-level config key (not in ServiceConfig). Read-only gateway instances |

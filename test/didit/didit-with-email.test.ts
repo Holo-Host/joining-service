@@ -117,29 +117,37 @@ function linkersAt(urls: string[]): UrlProvider {
 }
 
 describe('didit_with_email join', () => {
-  it('emails one link under base_url to the trimmed address, naming the network, the full agent key and the expiry, and calls no Didit', async () => {
-    const { request, emails, didit } = await diditApp();
+  it.each([
+    ['happ.name', {}, 'Test App'],
+    ['network_name', { network_name: 'Test Network' }, 'Test Network'],
+  ] as [string, Partial<ServiceConfig>, string][])('emails one link under base_url to the trimmed address as happ.name, naming the network by %s, the full agent key and the expiry, and calls no Didit', async (_by, overrides, network) => {
+    const { request, emails, didit } = await diditApp(overrides);
     const agent = await signingAgent();
     const { join } = await joined(request, emails, agent, `  ${EMAIL}\t`);
 
     expect(emails).toHaveLength(1);
     const [email] = emails;
     expect(email.to).toBe(EMAIL);
-    expect(email.subject).toBe('Verify your identity to join Test App');
+    expect(email.subject).toBe(`Verify your identity to join ${network}`);
     expect(email.body).toContain(`${BASE_URL}/v1/didit/${linkToken(email)}`);
-    expect(email.body).toContain('Request to verify your identity to join Test App with this email address.');
+    expect(email.body).toContain(`Request to verify your identity to join ${network} with this email address.`);
     expect(email.body).toContain(
       `For the device with this agent key:\n${agent.agentKey}\nContinue only if that is the key shown in your app.`,
     );
     expect(email.body).toMatch(/It works until \d{1,2} [A-Z][a-z]+ \d{4}, \d{2}:\d{2} UTC\./);
     expect(email.body).not.toMatch(/\b\d{6}\b/);
     expect(email.senderName).toBe('Test App');
+    expect(email.html).toContain('letter-spacing:.02em">Test App</p>');
     expect(email.html).toContain(`user-select:all">${agent.agentKey}</p>`);
     expect(email.html).toContain(`>${BASE_URL}/v1/didit/${linkToken(email)}</a>`);
     expect(didit.requests).toHaveLength(0);
 
     expect(join.status).toBe('pending');
     expect(join.poll_interval_ms).toBe(5000);
+
+    const page = await (await request(`/v1/didit/${linkToken(email)}`)).text();
+    expect(page).toContain('<p class="app">Test App</p>');
+    expect(page).toContain(`<p class="lead">Request to verify your identity to join ${network} with this email address.</p>`);
   });
 
   it('fills every placeholder of a configured subject and template', async () => {

@@ -231,6 +231,7 @@ export async function createTestApp(
               transport: new FileTransport(config.email?.output_dir ?? '/tmp/test-emails'),
               baseUrl: config.base_url!,
               happName: config.happ.name,
+              networkName: config.network_name,
             }),
           );
           break;
