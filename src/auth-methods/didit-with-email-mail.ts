@@ -22,7 +22,7 @@ const LINK_LINE = /^\s*\{\{link\}\}\s*$/;
 const KEY_LINE = /^\s*\{\{agent_key\}\}\s*$/;
 const WRAP = 'overflow-wrap:anywhere;word-break:break-word';
 const TEXT_STYLE = `margin:0 0 16px;font-family:${FONT};font-size:15px;line-height:22px;color:${CARD.text};${WRAP}`;
-const HEADING_STYLE = `margin:0 0 20px;font-family:${FONT};font-size:22px;line-height:28px;font-weight:600;color:${CARD.heading};${WRAP}`;
+const HEADING_STYLE = `margin:0 0 32px;font-family:${FONT};font-size:22px;line-height:28px;font-weight:600;color:${CARD.heading};${WRAP}`;
 const CAUTION_STYLE = `${TEXT_STYLE};margin-top:4px;font-size:13px;line-height:20px;color:${CARD.muted}`;
 
 function fill(template: string, values: LinkEmailValues): string {
@@ -85,13 +85,13 @@ export function renderLinkEmail(
 <meta name="supported-color-schemes" content="light dark">
 <title>${escapeHtml(subject)}</title>
 </head>
-<body style="margin:0;padding:0;background-color:${CARD.background}">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${CARD.background}" style="background-color:${CARD.background}"><tr>
+<body style="margin:0;padding:0">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
 <td align="center" style="padding:32px 16px">
 <!--[if mso]><table role="presentation" width="${CARD.width}" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${CARD.card}" style="max-width:${CARD.width}px;background-color:${CARD.card};border-radius:${CARD.cardRadius}"><tr>
-<td align="center" style="padding:32px 24px 16px;text-align:center">
-<p style="${TEXT_STYLE};margin-bottom:6px;font-size:14px;font-weight:600;letter-spacing:.02em">${escapeHtml(happName)}</p>
+<td align="center" style="padding:48px 32px 32px;text-align:center">
+<p style="${TEXT_STYLE};margin-bottom:24px;font-size:22px;line-height:28px;font-weight:600">${escapeHtml(happName)}</p>
 ${bodyHtml(template, values)}
 </td></tr></table>
 <!--[if mso]></td></tr></table><![endif]-->

@@ -133,7 +133,7 @@ describe('didit_with_email join', () => {
     expect(email.subject).toBe(`Verify your identity to start using ${network}`);
     expect(email.body).toBe(`Verify your identity to start using ${network}\n\n${link}`);
     expect(email.senderName).toBe('Test App');
-    expect(email.html).toContain('letter-spacing:.02em">Test App</p>');
+    expect(email.html).toContain('font-weight:600">Test App</p>');
     expect(email.html).toContain(`>Verify your identity to start using ${network}</h1>`);
     expect(email.html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${link}"`]);
     expect(email.html).toContain('>Verify your Identity</a>');
