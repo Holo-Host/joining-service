@@ -13,7 +13,7 @@ import { InviteCodeAuthMethod } from './auth-methods/invite-code.js';
 import { createDiditRoutes } from './routes/didit-links.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { UrlProvider } from './urls/provider.js';
-import type { AuthMethodEntry, AuthMethodGroup, Challenge, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
+import type { AuthMethodEntry, AuthMethodGroup, Challenge, JoiningServiceInfo, LinkerUrl, ReconnectResponse, RoleProvision } from './types.js';
 import type { LinkerRegistration } from './linker-auth/types.js';
 import {
   generateSessionId,
@@ -310,22 +310,16 @@ function buildNetworkConfig(config: ServiceConfig): NetworkConfig | undefined {
   return Object.keys(nc).length > 0 ? nc : undefined;
 }
 
-/** Per-role `{ dna_modifiers }` map as returned in /v1/info responses. */
-function rolesToInfo(
-  roles: Record<string, RoleConfig> | undefined,
-): Record<string, { dna_modifiers?: RoleConfig['modifiers'] }> | undefined {
+/** A role's dna_hash is safe to serve wherever its modifiers are: anyone with the happ bundle derives it from them. */
+function rolesToInfo(roles: Record<string, RoleConfig> | undefined): JoiningServiceInfo['roles'] {
   return roles
     ? Object.fromEntries(
-        Object.entries(roles).map(([role, rc]) => [role, { dna_modifiers: rc.modifiers }]),
+        Object.entries(roles).map(([role, rc]) => [role, { dna_hash: rc.dna_hash, dna_modifiers: rc.modifiers }]),
       )
     : undefined;
 }
 
-/**
- * Service-level /v1/info fields that are identical regardless of which
- * network (static or registered) the response describes -- only `happ`,
- * `happ_bundle_url`, and `roles` vary per network.
- */
+/** /v1/info fields that are the same for every network, static or registered. */
 async function buildServiceInfoFields(ctx: ServiceContext) {
   const { config } = ctx;
   const registrations = await ctx.urlProvider.getLinkerRegistrations();
@@ -356,6 +350,7 @@ async function buildStaticInfo(ctx: ServiceContext) {
       description: config.happ.description,
       icon_url: config.happ.icon_url,
     },
+    network_name: config.network_name,
     happ_bundle_url: config.happ.happ_bundle_url,
     roles: rolesToInfo(config.roles),
     ...(await buildServiceInfoFields(ctx)),
