@@ -130,7 +130,7 @@ describe('didit_with_email join', () => {
     const [email] = emails;
     expect(email.to).toBe(EMAIL);
     const link = `${BASE_URL}/v1/didit/${linkToken(email)}`;
-    expect(email.subject).toBe(`Verify your identity to join ${network}`);
+    expect(email.subject).toBe(`Verify your identity to start using ${network}`);
     expect(email.body).toBe(`Verify your identity to start using ${network}\n\n${link}`);
     expect(email.senderName).toBe('Test App');
     expect(email.html).toContain('letter-spacing:.02em">Test App</p>');
@@ -1055,7 +1055,7 @@ describe('the ready path of a didit_with_email join', () => {
     expect(join.status).toBe(201);
     const { session } = await join.json();
 
-    expect(emails[0].subject).toBe('Verify your identity to join Acme');
+    expect(emails[0].subject).toBe('Verify your identity to start using Acme');
     expect(await (await request(`/v1/didit/${linkToken(emails[0])}`)).text()).toContain('<h1>Verify your identity to start using Acme</h1>');
     const resume = async (extra: Record<string, unknown>) =>
       postJson(request, '/v1/join/resume', { agent_key: agent.agentKey, ...(await agent.sign(resumeMessage)), ...extra });

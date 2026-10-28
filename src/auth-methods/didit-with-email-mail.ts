@@ -1,6 +1,6 @@
 import { CARD, FONT, MONO, escapeHtml } from './didit-with-email-card.js';
 
-const DEFAULT_SUBJECT = 'Verify your identity to join {{network}}';
+const DEFAULT_SUBJECT = 'Verify your identity to start using {{network}}';
 const DEFAULT_TEMPLATE = `Verify your identity to start using {{network}}
 
 {{link}}`;
