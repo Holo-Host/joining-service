@@ -1,17 +1,14 @@
-import { createHash } from 'node:crypto';
 import type { DiditWithEmailState } from '../types.js';
 import { NO_ATTEMPTS_LEFT } from './didit-with-email.js';
-import { CARD, FONT, MONO, escapeHtml } from './didit-with-email-card.js';
-
-const COPY_SCRIPT =
-  "const b=document.getElementById('copy'),k=document.getElementById('key'),f=document.getElementById('copy-failed');if(navigator.clipboard){b.hidden=false;b.onclick=()=>navigator.clipboard.writeText(k.textContent).then(()=>{b.textContent='Copied'},()=>{b.hidden=true;f.hidden=false;getSelection().selectAllChildren(k)})}";
+import { CARD, FONT, escapeHtml } from './didit-with-email-card.js';
+import { identiconSvg } from './didit-with-email-identicon.js';
 
 const PAGE_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
   'Cache-Control': 'no-store',
   'Referrer-Policy': 'no-referrer',
   'X-Robots-Tag': 'noindex',
-  'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-${createHash('sha256').update(COPY_SCRIPT).digest('base64')}'; frame-ancestors 'none'`,
+  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
 };
 
 export const TEXT = {
@@ -22,21 +19,10 @@ export const TEXT = {
   inReview: 'Your verification is in review. After the review, the app continues by itself.',
   inProgress: 'Your verification is still in progress. Go back to the app. It continues by itself.',
   notPassed: 'Your verification did not pass. To try again, open the link in your email again.',
-  notPassedLanding: 'Your last verification did not pass. Continue to start a new attempt.',
-  notFound: 'We could not find your verification. To start again, open the link in your email and press Continue.',
+  notPassedLanding: 'Your last verification did not pass. Check the icon below to start a new attempt.',
+  notFound: 'We could not find your verification. To start again, open the link in your email.',
   rejected: NO_ATTEMPTS_LEFT,
   otherDevice: 'Another device is verifying this email. Finish there, or try again when it ends.',
-  keyIntro: 'For the device with this agent key:',
-  keyCheck: 'Continue only if that is the key shown in your app.',
-  copyFailed: 'Your browser did not allow copying. Select the key and copy it.',
-  caution: 'If you did not start this, close this page and do not continue.',
-};
-
-const LANDING_LEAD: Partial<Record<DiditWithEmailState, string>> = {
-  approved: TEXT.approvedLanding,
-  in_review: TEXT.inReview,
-  declined: TEXT.notPassedLanding,
-  expired: TEXT.notPassedLanding,
 };
 
 const STYLE = `*{box-sizing:border-box}
@@ -48,18 +34,16 @@ h1{margin:0 0 16px;font-size:22px;line-height:1.3;font-weight:600;color:${CARD.h
 p{margin:0 0 12px}
 p:last-child{margin-bottom:0}
 .lead{font-weight:600;color:${CARD.heading}}
-.key{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:8px 8px 8px 12px;background:${CARD.keyBox};border:1px solid ${CARD.keyBorder};border-radius:${CARD.buttonRadius};text-align:left}
-.key code{flex:1;min-width:0;font:13px/1.5 ${MONO};color:${CARD.heading};overflow-wrap:anywhere;word-break:break-word;-webkit-user-select:all;user-select:all}
-.caution{margin-top:20px;font-size:13px;color:${CARD.muted}}
+.match{display:flex;align-items:center;gap:16px;margin:0 0 12px;padding:16px;background:${CARD.button};border-radius:${CARD.buttonRadius};text-align:left}
+.match p{margin:0;font-weight:600;color:${CARD.buttonText}}
+.identicon{flex:none;width:80px;height:80px;border-radius:50%}
 form{margin:20px 0 0}
 button{width:100%;min-height:44px;padding:10px 20px;border:0;border-radius:${CARD.buttonRadius};background:${CARD.button};color:${CARD.buttonText};font:600 15px/1.5 ${FONT};cursor:pointer}
 button:hover{background:#0a5fbe}
-button:focus-visible{outline:2px solid ${CARD.heading};outline-offset:3px}
-.key button{width:auto;min-width:64px;padding:0 12px;background:#2a2a30;font-size:13px}
-.key button:hover{background:#3a3a42}`;
+button:focus-visible{outline:2px solid ${CARD.heading};outline-offset:3px}`;
 
 export function linkPages(happName: string) {
-  function page(status: number, lead: string, more: { body?: string; caution?: string } = {}): Response {
+  function page(status: number, heading: string, body: string): Response {
     const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -71,10 +55,8 @@ export function linkPages(happName: string) {
 <body>
 <main>
 <p class="app">${escapeHtml(happName)}</p>
-<h1>Identity verification</h1>
-<p class="lead">${escapeHtml(lead)}</p>
-${more.body ?? ''}
-${more.caution ? `<p class="caution">${escapeHtml(more.caution)}</p>` : ''}
+<h1>${escapeHtml(heading)}</h1>
+${body}
 </main>
 </body>
 </html>
@@ -83,25 +65,20 @@ ${more.caution ? `<p class="caution">${escapeHtml(more.caution)}</p>` : ''}
   }
 
   function message(text: string, status = 200): Response {
-    return page(status, text);
+    return page(status, 'Identity verification', `<p class="lead">${escapeHtml(text)}</p>`);
   }
 
   return {
     message,
 
     landing({ network, agentKey, state }: { network: string; agentKey: string; state: DiditWithEmailState }): Response {
-      const request = `Request to verify your identity to join ${network} with this email address.`;
-      const lead = LANDING_LEAD[state];
-      const body = `${lead ? `<p>${escapeHtml(request)}</p>\n` : ''}<p>${escapeHtml(TEXT.keyIntro)}</p>
-<div class="key"><code id="key">${escapeHtml(agentKey)}</code><button type="button" id="copy" aria-live="polite" hidden>Copy</button></div>
-<p id="copy-failed" role="status" hidden>${escapeHtml(TEXT.copyFailed)}</p>
-<script>${COPY_SCRIPT}</script>
-<p>${escapeHtml(TEXT.keyCheck)}</p>`;
-      if (state === 'approved' || state === 'in_review') return page(200, lead!, { body });
-      return page(200, lead ?? request, {
-        body: `${body}\n<form method="post"><button type="submit">Continue</button></form>`,
-        caution: TEXT.caution,
-      });
+      if (state === 'approved') return message(TEXT.approvedLanding);
+      if (state === 'in_review') return message(TEXT.inReview);
+      const failed = state === 'declined' || state === 'expired' ? `<p class="lead">${escapeHtml(TEXT.notPassedLanding)}</p>\n` : '';
+      const body = `${failed}<div class="match">${identiconSvg(agentKey)}<p>${escapeHtml(`Ensure this matches in the ${happName} App`)}</p></div>
+<p>Do not proceed if the agent icon doesn't match.</p>
+<form method="post"><button type="submit">Yes-- Image matches (OK)</button></form>`;
+      return page(200, `Verify your identity to start using ${network}`, body);
     },
 
     done(state: DiditWithEmailState): Response {

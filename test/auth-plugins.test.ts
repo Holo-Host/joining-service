@@ -82,7 +82,7 @@ describe('buildAuthPlugins', () => {
     const { agentKey } = await signingAgent();
     const [challenge] = await plugin.createChallenges(agentKey, { email: 'ada@example.com' }, config);
     await plugin.sendFirst(agentKey, 'ada@example.com', { expires_at: Date.now(), ...takeLink(challenge) });
-    expect(sent[0].subject).toBe('Verify your identity to join Acme Mainnet');
+    expect(sent[0].subject).toBe('Verify your identity to start using Acme Mainnet');
     expect(sent[0].senderName).toBe('Acme');
     expect(sent[0].body).toContain(`${BASE_URL}/v1/didit/`);
     vi.restoreAllMocks();
