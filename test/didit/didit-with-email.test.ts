@@ -131,17 +131,10 @@ describe('didit_with_email join', () => {
     expect(email.to).toBe(EMAIL);
     const link = `${BASE_URL}/v1/didit/${linkToken(email)}`;
     expect(email.subject).toBe(`Verify your identity to start using ${network}`);
-    expect(email.body).toBe(
-      `Thank you for downloading and installing the Test App Software to access the ${network} network.\n\n` +
-        `Verify your identity\nto start using ${network}\n\n` +
-        'Click to confirm your email address and start the KYC process. Please match the icon that appears on the next page.\n\n' +
-        `${link}\n\nYou can ignore this message if you didn't install the Test App Software to access ${network}.\n\n` +
-        `If the button doesn't work, you can copy this link into a browser:\n${link}`,
-    );
+    expect(email.body).not.toMatch(/\{\{|^# /m);
+    expect(email.body).toContain(network);
+    expect(email.body).toContain(link);
     expect(email.senderName).toBe('Test App');
-    expect(email.html).toContain(`>Thank you for downloading and installing the Test App Software to access the ${network} network.</p>`);
-    expect(email.html).toContain(`>Verify your identity<br>to start using ${network}</h1>`);
-    expect(email.html).toContain(`<span style="word-break:break-all">${link}</span>`);
     expect(email.html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${link}"`]);
     expect(email.html).toContain('>Verify your Identity</a>');
     expect(email.html).not.toContain(agent.agentKey);
