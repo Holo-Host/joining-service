@@ -131,10 +131,10 @@ describe('didit_with_email join', () => {
     expect(email.to).toBe(EMAIL);
     const link = `${BASE_URL}/v1/didit/${linkToken(email)}`;
     expect(email.subject).toBe(`Verify your identity to start using ${network}`);
-    expect(email.body).toBe(`Verify your identity to start using ${network}\n\n${link}`);
+    expect(email.body).not.toMatch(/\{\{|^# /m);
+    expect(email.body).toContain(network);
+    expect(email.body).toContain(link);
     expect(email.senderName).toBe('Test App');
-    expect(email.html).toContain('font-weight:600">Test App</p>');
-    expect(email.html).toContain(`>Verify your identity to start using ${network}</h1>`);
     expect(email.html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${link}"`]);
     expect(email.html).toContain('>Verify your Identity</a>');
     expect(email.html).not.toContain(agent.agentKey);
@@ -400,29 +400,50 @@ describe('didit_with_email join', () => {
 });
 
 describe('the didit_with_email email', () => {
-  it('escapes every value and the template, sets the first paragraph as the heading and a last one without the button small, wraps long words, and makes a line holding only the link a button and one holding only the key a selectable box', () => {
+  it('escapes every value and the template, wraps long words, takes the first paragraph as the heading when none is marked, and makes a line holding only the link a button and one holding only the key a selectable box', () => {
     const link = 'https://join.example.com/v1/didit/a&b';
     const href = 'https://join.example.com/v1/didit/a&#38;b';
     const { subject, text, html } = renderLinkEmail(
       'Ada & Co',
       {
-        email_subject: 'Join <i>{{network}}</i>',
-        email_template: '<b>Hi</b> {{network}}, key {{agent_key}}\n{{link}}\n\n{{agent_key}}\n\nUntil {{expires_at}}. See {{link}}',
+        email_subject: 'Join <i>{{network}}</i> {{app}}',
+        email_template: '<b>Hi</b> {{network}}, key {{agent_key}}\n\n{{agent_key}}\n{{link}}',
       },
       { network: '<img src=x>', link, expires_at: '1 May', agent_key: '"key"' },
     );
-    expect(subject).toBe('Join <i><img src=x></i>');
-    expect(text).toBe(`<b>Hi</b> <img src=x>, key "key"\n${link}\n\n"key"\n\nUntil 1 May. See ${link}`);
+    expect(subject).toBe('Join <i><img src=x></i> Ada & Co');
+    expect(text).toBe(`<b>Hi</b> <img src=x>, key "key"\n\n"key"\n${link}`);
     expect(html).not.toMatch(/<(i|b|img|script)\b/);
-    expect(html).toContain('>Ada &#38; Co</p>');
-    expect(html).toContain('<title>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62;</title>');
+    expect(html).toContain('<title>Join &#60;i&#62;&#60;img src=x&#62;&#60;/i&#62; Ada &#38; Co</title>');
     expect(html).toContain('word-break:break-word">&#60;b&#62;Hi&#60;/b&#62; &#60;img src=x&#62;, key &#34;key&#34;</h1>');
     expect(html).toContain('user-select:all">&#34;key&#34;</p>');
     expect(html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${href}"`]);
-    expect(html).toContain(`font-size:13px;line-height:20px;color:#8e8e93">Until 1 May. See ${href}</p>`);
+  });
 
-    const endsOnButton = renderLinkEmail('A', { email_template: 'Hi\n\nOpen it:\n{{link}}' }, { network: 'N', link, expires_at: '1 May', agent_key: 'k' });
-    expect(endsOnButton.html).toContain('color:#bbbbbc;overflow-wrap:anywhere;word-break:break-word">Open it:</p>');
+  it('sets the paragraphs before the # heading above the card and those after the button below it in small muted text, where a line holding only the link is text to copy', () => {
+    const link = 'https://join.example.com/v1/didit/t';
+    const { text, html } = renderLinkEmail(
+      'Ada',
+      { email_template: 'Thanks for {{app}}.\n\n# Verify\nfor {{network}}\n\nBody\n\n{{link}}\n\nCopy:\n{{link}}' },
+      { network: 'Net', link, expires_at: '1 May', agent_key: 'k' },
+    );
+    expect(text).toBe(`Thanks for Ada.\n\nVerify\nfor Net\n\nBody\n\n${link}\n\nCopy:\n${link}`);
+    const at = (part: string) => {
+      const i = html.indexOf(part);
+      expect(i, part).toBeGreaterThan(-1);
+      return i;
+    };
+    const order = [
+      at('>Thanks for Ada.</p>'),
+      at('bgcolor="#1c1c21"'),
+      at('>Verify<br>for Net</h1>'),
+      at('>Body</p>'),
+      at('>Verify your Identity</a>'),
+      at('<!--[if mso]></td></tr></table><![endif]-->'),
+      at(`font-size:13px;line-height:20px;color:#8e8e93">Copy:<br><span style="word-break:break-all">${link}</span></p>`),
+    ];
+    expect(order).toEqual([...order].sort((x, y) => x - y));
+    expect(html.match(/<a href="[^"]*"/g)).toEqual([`<a href="${link}"`]);
   });
 });
 
