@@ -405,9 +405,9 @@ graph LR
 
         Local["<b>Local / Dev</b><br/>Node.js process<br/>MemorySessionStore<br/>FileTransport (email)<br/>StaticUrlProvider"]
 
-        Docker["<b>Docker / VPS</b><br/>Node.js in container<br/>SqliteSessionStore<br/>Postmark/SendGrid<br/>StaticUrlProvider"]
+        Docker["<b>Docker / VPS</b><br/>Node.js in container<br/>SqliteSessionStore<br/>Postmark/SendGrid/Cloudflare<br/>StaticUrlProvider"]
 
-        CF["<b>Cloudflare Worker</b><br/>Edge runtime<br/>KvSessionStore<br/>Postmark/SendGrid<br/>KvUrlProvider"]
+        CF["<b>Cloudflare Worker</b><br/>Edge runtime<br/>KvSessionStore<br/>Postmark/SendGrid/Cloudflare<br/>KvUrlProvider"]
     end
 
     style Local fill:#2d6a4e,color:#fff
@@ -419,7 +419,7 @@ graph LR
 |-----------|-----------|------------|-------------------|
 | Runtime | Node.js | Node.js | Workers runtime |
 | Session store | Memory | SQLite (file) | Cloudflare KV |
-| Email transport | File (writes .txt) | Postmark or SendGrid | Postmark or SendGrid |
+| Email transport | File (writes .txt) | Postmark, SendGrid or Cloudflare | Postmark, SendGrid or Cloudflare |
 | URL provider | Static | Static | KV (dynamic) |
 | Config source | JSON file | JSON file | Environment vars + secrets |
 | Scaling | Single instance | Single instance | Edge (multi-region) |

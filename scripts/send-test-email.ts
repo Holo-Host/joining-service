@@ -37,7 +37,7 @@ try {
   if (!flattenMethods(config.auth_methods).includes('didit_with_email')) fail('the config does not use didit_with_email');
   if (config.email!.provider !== 'file' && !apiKey) fail('set EMAIL_API_KEY to the email provider API key');
   const provider = buildEmailTransport(config);
-  if (!provider) fail('email.provider must be postmark, sendgrid or file');
+  if (!provider) fail('email.provider must be postmark, sendgrid, cloudflare or file');
   // The method logs only the provider's status, and a test send shows its whole answer.
   const transport: EmailTransport = {
     send: (...args) => provider.send(...args).catch((err) => {

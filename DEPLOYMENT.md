@@ -359,8 +359,9 @@ The older `dna_hashes`/`dna_modifiers` fields no longer exist — a config conta
 | `roles` | Record\<role_name, {dna_hash?, modifiers?}\> | — | Role-centric configuration: `{role_name: {dna_hash?: "...", modifiers?: {...}}}`. `dna_hash` is required per-role only when `membrane_proof.enabled` is true (it binds the membrane proof to a network); when present it is always validated. See [Obtaining the DNA hash](#obtaining-the-dna-hash). |
 | `membrane_proof.enabled` | boolean | false | Enable server-signed membrane proofs |
 | `membrane_proof.signing_key_path` | string | — | Path to 64-char hex seed file. If absent, an ephemeral key is used. The public key derived from this seed **must match the progenitor embedded in the DNA**. |
-| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"file"` | — | Required for `email_code` and `didit_with_email` auth. Postmark and SendGrid send with link and open tracking off, and SendGrid with subscription tracking off too. |
-| `email.api_key` | string | — | Postmark or SendGrid API token |
+| `email.provider` | `"postmark"` \| `"sendgrid"` \| `"cloudflare"` \| `"file"` | — | Required for `email_code` and `didit_with_email` auth. Postmark and SendGrid send with link and open tracking off, and SendGrid with subscription tracking off too. `cloudflare` sends through Cloudflare Email Sending. |
+| `email.account_id` | string | — | Cloudflare account ID, for `cloudflare` |
+| `email.api_key` | string | — | Postmark or SendGrid API token, or a Cloudflare API token with the **Email Sending: Edit** permission |
 | `email.from` | string | — | Sender address |
 | `email.template` | string | — | Custom email template |
 | `email.output_dir` | string | `./dev-emails` | Directory for file transport output |
