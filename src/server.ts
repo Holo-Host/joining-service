@@ -10,6 +10,7 @@ import type { SessionStore } from './session/store.js';
 import { FileTransport } from './email/file.js';
 import { PostmarkTransport } from './email/postmark.js';
 import { SendGridTransport } from './email/sendgrid.js';
+import { CloudflareTransport } from './email/cloudflare.js';
 import { LairProofGenerator } from './membrane-proof/lair-signer.js';
 import type { MembraneProofGenerator } from './membrane-proof/generator.js';
 import type { EmailTransport } from './email/transport.js';
@@ -43,6 +44,13 @@ export function buildEmailTransport(config: ServiceConfig): EmailTransport | nul
       throw new Error('SendGrid requires api_key and from');
     }
     return new SendGridTransport(config.email.api_key, config.email.from);
+  }
+
+  if (config.email.provider === 'cloudflare') {
+    if (!config.email.account_id || !config.email.api_key || !config.email.from) {
+      throw new Error('Cloudflare requires account_id, api_key and from');
+    }
+    return new CloudflareTransport(config.email.account_id, config.email.api_key, config.email.from);
   }
 
   return null;

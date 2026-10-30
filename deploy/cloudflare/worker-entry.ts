@@ -11,6 +11,7 @@ import { KvSessionStore } from '../../src/session/kv-store.js';
 import { KvUrlProvider } from '../../src/urls/kv.js';
 import { PostmarkTransport } from '../../src/email/postmark.js';
 import { SendGridTransport } from '../../src/email/sendgrid.js';
+import { CloudflareTransport } from '../../src/email/cloudflare.js';
 import { HcAuthClient } from '../../src/hc-auth/index.js';
 import type { MembraneProofGenerator } from '../../src/membrane-proof/generator.js';
 import type { EmailTransport } from '../../src/email/transport.js';
@@ -41,6 +42,13 @@ function buildEmailTransport(config: ServiceConfig): EmailTransport | null {
       throw new Error('SendGrid requires api_key and from');
     }
     return new SendGridTransport(config.email.api_key, config.email.from);
+  }
+
+  if (config.email.provider === 'cloudflare') {
+    if (!config.email.account_id || !config.email.api_key || !config.email.from) {
+      throw new Error('Cloudflare requires account_id, api_key and from');
+    }
+    return new CloudflareTransport(config.email.account_id, config.email.api_key, config.email.from);
   }
 
   return null;

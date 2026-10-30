@@ -44,7 +44,8 @@ export interface ServiceConfig {
     signing_key_path?: string;
   };
   email?: {
-    provider: 'postmark' | 'sendgrid' | 'file';
+    provider: 'postmark' | 'sendgrid' | 'cloudflare' | 'file';
+    account_id?: string;
     api_key?: string;
     from?: string;
     template?: string;
